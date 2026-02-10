@@ -292,7 +292,7 @@ bool ParseWorkerLaunchOptions(int argc, char* argv[], WorkerLaunchOptions* optio
     return true;
 }
 
-bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options)
+bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool underground2Server)
 {
     const std::filesystem::path configPath = "server.cfg";
     if (!std::filesystem::exists(configPath))
@@ -334,23 +334,31 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options)
         }
     }
 
-    std::string gamefileValue = TrimAscii(GetConfigValue(configText, "GAMEFILE").value_or("gamefile.bin"));
+    const std::string expectedGamefile = underground2Server ? "gameplay.bin" : "gamefile.bin";
+    const auto configuredGamefile = GetConfigValue(configText, "GAMEFILE");
+
+    std::string gamefileValue = TrimAscii(configuredGamefile.value_or(expectedGamefile));
     if (gamefileValue.empty())
     {
-        gamefileValue = "gamefile.bin";
+        gamefileValue = expectedGamefile;
+    }
+
+    if (!configuredGamefile.has_value())
+    {
+        configText = UpsertConfigValue(configText, "GAMEFILE", expectedGamefile);
+        changed = true;
+        std::cout << "NFSLAN: Added GAMEFILE=" << expectedGamefile << " for selected server profile.\n";
     }
 
     if (!std::filesystem::exists(std::filesystem::path(gamefileValue)))
     {
-        if (std::filesystem::exists("gameplay.bin"))
+        if (!EqualsIgnoreCase(gamefileValue, expectedGamefile)
+            && std::filesystem::exists(std::filesystem::path(expectedGamefile)))
         {
-            if (!EqualsIgnoreCase(gamefileValue, "gameplay.bin"))
-            {
-                configText = UpsertConfigValue(configText, "GAMEFILE", "gameplay.bin");
-                changed = true;
-            }
             std::cout << "NFSLAN: GAMEFILE '" << gamefileValue
-                      << "' not found; using gameplay.bin fallback.\n";
+                      << "' not found; using " << expectedGamefile << " for selected profile.\n";
+            configText = UpsertConfigValue(configText, "GAMEFILE", expectedGamefile);
+            changed = true;
         }
         else
         {
@@ -735,7 +743,9 @@ int NFSLANWorkerMain(int argc, char* argv[])
         return -1;
     }
 
-    if (!ApplyServerConfigCompatibility(options))
+    const bool underground2Server = bIsUnderground2Server((uintptr_t)serverdll);
+
+    if (!ApplyServerConfigCompatibility(options, underground2Server))
     {
         return -1;
     }
@@ -744,7 +754,7 @@ int NFSLANWorkerMain(int argc, char* argv[])
     {
         std::cout << "NFSLAN: Patching the server to work on any network...\n";
 
-        if (bIsUnderground2Server((uintptr_t)serverdll))
+        if (underground2Server)
             PatchServerUG2((uintptr_t)serverdll);
         else
             PatchServerMW((uintptr_t)serverdll);

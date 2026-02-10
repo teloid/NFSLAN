@@ -8,6 +8,7 @@ In your chosen server directory, place:
 - `server.cfg`
 
 Use the correct `server.dll` for the selected game profile.
+Do not run server directly from your game installation folder; use a separate server folder copy.
 
 ## Start from GUI
 
