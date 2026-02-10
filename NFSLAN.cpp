@@ -25,6 +25,9 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <iphlpapi.h>
 #include "injector/injector.hpp"
@@ -126,8 +129,8 @@ bool TryParseInt(const std::string& input, int* valueOut)
         return false;
     }
 
-    if (parsed < static_cast<long>(std::numeric_limits<int>::min())
-        || parsed > static_cast<long>(std::numeric_limits<int>::max()))
+    if (parsed < static_cast<long>((std::numeric_limits<int>::min)())
+        || parsed > static_cast<long>((std::numeric_limits<int>::max)()))
     {
         return false;
     }
@@ -434,7 +437,7 @@ std::string ReadBeaconStringField(const char* payload, int length, size_t offset
     }
 
     std::string out;
-    const size_t safeMaxLen = std::min(maxLen, static_cast<size_t>(length) - offset);
+    const size_t safeMaxLen = (std::min)(maxLen, static_cast<size_t>(length) - offset);
     out.reserve(safeMaxLen);
 
     for (size_t i = 0; i < safeMaxLen; ++i)
@@ -461,7 +464,7 @@ std::string FindPrintableString(const char* payload, int length, size_t start, s
         return {};
     }
 
-    const size_t maxBound = std::min(end, static_cast<size_t>(length));
+    const size_t maxBound = (std::min)(end, static_cast<size_t>(length));
     for (size_t i = start; i < maxBound; ++i)
     {
         const std::string candidate = ReadBeaconStringField(payload, length, i, maxBound - i);
@@ -493,7 +496,7 @@ std::string HexPreview(const char* payload, int length, size_t bytesToShow)
         return {};
     }
 
-    const size_t bytes = std::min(static_cast<size_t>(length), bytesToShow);
+    const size_t bytes = (std::min)(static_cast<size_t>(length), bytesToShow);
     std::ostringstream stream;
     stream << std::hex << std::setfill('0');
     for (size_t i = 0; i < bytes; ++i)
