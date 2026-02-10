@@ -317,7 +317,7 @@ void SigInterruptHandler(int signum)
     exit(signum);
 }
 
-int main(int argc, char* argv[])
+int NFSLANWorkerMain(int argc, char* argv[])
 {
     std::cout << "NFS LAN Server Launcher\n";
 
@@ -406,3 +406,10 @@ int main(int argc, char* argv[])
 
     return 0;
 }
+
+#ifndef NFSLAN_WORKER_NO_MAIN
+int main(int argc, char* argv[])
+{
+    return NFSLANWorkerMain(argc, argv);
+}
+#endif
