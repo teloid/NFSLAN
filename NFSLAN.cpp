@@ -515,6 +515,50 @@ void StopLanDiscoveryLoopbackBridge()
     }
 }
 
+void LogLanDiscoveryPortDiagnostic()
+{
+    try
+    {
+        WSASession wsaSession;
+        SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock == INVALID_SOCKET)
+        {
+            std::cout << "NFSLAN: WARNING - UDP 9999 diagnostic socket creation failed (WSA error "
+                      << WSAGetLastError() << ").\n";
+            return;
+        }
+
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+        const int bindResult = bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+        if (bindResult == 0)
+        {
+            std::cout << "NFSLAN: UDP 9999 appears free for local client discovery bind.\n";
+        }
+        else
+        {
+            const int err = WSAGetLastError();
+            if (err == WSAEADDRINUSE)
+            {
+                std::cout << "NFSLAN: UDP 9999 is already in use (expected when server discovery socket is active).\n";
+            }
+            else
+            {
+                std::cout << "NFSLAN: UDP 9999 diagnostic bind failed (WSA error " << err << ").\n";
+            }
+        }
+
+        closesocket(sock);
+    }
+    catch (const std::exception& ex)
+    {
+        std::cout << "NFSLAN: WARNING - UDP 9999 diagnostic failed: " << ex.what() << '\n';
+    }
+}
+
 bool ParseIpv4(const std::string& input, uint8_t* octets)
 {
     unsigned int a = 0;
@@ -629,15 +673,23 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool und
     bool changed = false;
     std::cout << "NFSLAN: Detected server profile: " << (underground2Server ? "Underground 2" : "Most Wanted") << '\n';
 
-    const std::string lobbyIdentDefault = underground2Server ? "NFSU" : "NFSMW";
+    const std::string lobbyIdentDefault = underground2Server ? "NFSU2NA" : "NFSMWNA";
     EnsureConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
     EnsureConfigValue(&configText, "LOBBY", lobbyIdentDefault, &changed);
 
     const std::string portValue = EnsureConfigValue(&configText, "PORT", "9900", &changed);
-    const std::string addrValue = EnsureConfigValue(&configText, "ADDR", "0.0.0.0", &changed);
+    std::string addrValue = EnsureConfigValue(&configText, "ADDR", "0.0.0.0", &changed);
 
     if (options.sameMachineMode)
     {
+        if (!EqualsIgnoreCase(TrimAscii(addrValue), "127.0.0.1"))
+        {
+            configText = UpsertConfigValue(configText, "ADDR", "127.0.0.1");
+            addrValue = "127.0.0.1";
+            changed = true;
+            std::cout << "NFSLAN: Same-machine mode enabled -> ADDR=127.0.0.1\n";
+        }
+
         if (!IsTruthy(GetConfigValue(configText, "FORCE_LOCAL").value_or("0")))
         {
             configText = UpsertConfigValue(configText, "FORCE_LOCAL", "1");
@@ -693,6 +745,8 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool und
     };
 
     std::cout << "NFSLAN: Effective ADDR/PORT: " << cfg("ADDR") << ":" << cfg("PORT") << '\n';
+    std::cout << "NFSLAN: Effective lobby ident: LOBBY_IDENT=" << cfg("LOBBY_IDENT")
+              << " LOBBY=" << cfg("LOBBY") << '\n';
     if (underground2Server)
     {
         std::cout << "NFSLAN: Effective UG2 endpoints: M=" << cfg("MADDR") << ":" << cfg("MPORT")
@@ -1187,6 +1241,11 @@ int NFSLANWorkerMain(int argc, char* argv[])
     {
         std::cerr << "ERROR: could not launch server! StartServer returned true but IsServerRunning returned false!\n";
         return -1;
+    }
+
+    if (options.sameMachineMode)
+    {
+        LogLanDiscoveryPortDiagnostic();
     }
 
     StartLanDiscoveryLoopbackBridge(options.sameMachineMode);
