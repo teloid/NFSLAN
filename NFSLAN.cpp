@@ -7,9 +7,17 @@
 #include <algorithm>
 #include <string>
 #include <regex>
+#include <fstream>
+#include <sstream>
+#include <optional>
+#include <cctype>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <signal.h>
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <iphlpapi.h>
 #include "injector/injector.hpp"
@@ -31,6 +39,342 @@ std::map<uint32_t, uint32_t> RedirIPs;
 std::vector<uint32_t> LocalUsers;
 
 uint32_t lobbyClientDestAddr = 0;
+
+namespace
+{
+
+struct WorkerLaunchOptions
+{
+    std::string serverName;
+    bool disablePatching = false;
+    bool sameMachineMode = false;
+};
+
+std::string TrimAscii(const std::string& input)
+{
+    const auto first = input.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos)
+    {
+        return {};
+    }
+    const auto last = input.find_last_not_of(" \t\r\n");
+    return input.substr(first, (last - first) + 1);
+}
+
+bool EqualsIgnoreCase(const std::string& a, const std::string& b)
+{
+    if (a.size() != b.size())
+    {
+        return false;
+    }
+
+    for (size_t i = 0; i < a.size(); ++i)
+    {
+        if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i])))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool ParseConfigLine(const std::string& line, std::string* keyOut, std::string* valueOut)
+{
+    std::string working = line;
+    if (!working.empty() && working.back() == '\r')
+    {
+        working.pop_back();
+    }
+
+    const std::string trimmed = TrimAscii(working);
+    if (trimmed.empty() || trimmed[0] == '#' || trimmed[0] == ';')
+    {
+        return false;
+    }
+
+    const auto equalsPos = trimmed.find('=');
+    if (equalsPos == std::string::npos)
+    {
+        return false;
+    }
+
+    *keyOut = TrimAscii(trimmed.substr(0, equalsPos));
+    *valueOut = TrimAscii(trimmed.substr(equalsPos + 1));
+    return !keyOut->empty();
+}
+
+std::optional<std::string> GetConfigValue(const std::string& configText, const std::string& key)
+{
+    std::istringstream stream(configText);
+    std::string line;
+    while (std::getline(stream, line))
+    {
+        std::string foundKey;
+        std::string foundValue;
+        if (ParseConfigLine(line, &foundKey, &foundValue) && EqualsIgnoreCase(foundKey, key))
+        {
+            return foundValue;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string UpsertConfigValue(const std::string& configText, const std::string& key, const std::string& value)
+{
+    std::istringstream stream(configText);
+    std::string line;
+    std::vector<std::string> lines;
+    bool replaced = false;
+
+    while (std::getline(stream, line))
+    {
+        std::string foundKey;
+        std::string foundValue;
+        if (ParseConfigLine(line, &foundKey, &foundValue) && EqualsIgnoreCase(foundKey, key))
+        {
+            lines.push_back(key + "=" + value);
+            replaced = true;
+        }
+        else
+        {
+            if (!line.empty() && line.back() == '\r')
+            {
+                line.pop_back();
+            }
+            lines.push_back(line);
+        }
+    }
+
+    if (!replaced)
+    {
+        lines.push_back(key + "=" + value);
+    }
+
+    std::string output;
+    for (size_t i = 0; i < lines.size(); ++i)
+    {
+        output += lines[i];
+        if (i + 1 < lines.size())
+        {
+            output += "\r\n";
+        }
+    }
+
+    return output;
+}
+
+bool ReadTextFile(const std::filesystem::path& path, std::string* outText)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        return false;
+    }
+
+    *outText = std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    return true;
+}
+
+bool WriteTextFile(const std::filesystem::path& path, const std::string& text)
+{
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file)
+    {
+        return false;
+    }
+
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    return file.good();
+}
+
+bool IsTruthy(const std::string& value)
+{
+    const std::string normalized = TrimAscii(value);
+    return EqualsIgnoreCase(normalized, "1")
+        || EqualsIgnoreCase(normalized, "true")
+        || EqualsIgnoreCase(normalized, "yes")
+        || EqualsIgnoreCase(normalized, "on");
+}
+
+bool ParseIpv4(const std::string& input, uint8_t* octets)
+{
+    unsigned int a = 0;
+    unsigned int b = 0;
+    unsigned int c = 0;
+    unsigned int d = 0;
+    char tail = '\0';
+
+    if (std::sscanf(input.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) != 4)
+    {
+        return false;
+    }
+    if (a > 255 || b > 255 || c > 255 || d > 255)
+    {
+        return false;
+    }
+
+    octets[0] = static_cast<uint8_t>(a);
+    octets[1] = static_cast<uint8_t>(b);
+    octets[2] = static_cast<uint8_t>(c);
+    octets[3] = static_cast<uint8_t>(d);
+    return true;
+}
+
+bool LooksPrivateOrNonRoutableIpv4(const std::string& value)
+{
+    uint8_t octets[4] = {};
+    if (!ParseIpv4(TrimAscii(value), octets))
+    {
+        return false;
+    }
+
+    const uint8_t a = octets[0];
+    const uint8_t b = octets[1];
+
+    if (a == 10 || a == 127 || a == 0)
+    {
+        return true;
+    }
+    if (a == 169 && b == 254)
+    {
+        return true;
+    }
+    if (a == 172 && b >= 16 && b <= 31)
+    {
+        return true;
+    }
+    if (a == 192 && b == 168)
+    {
+        return true;
+    }
+    return false;
+}
+
+void PrintUsage()
+{
+    std::cout
+        << "USAGE: NFSLAN servername [options]\n"
+        << "  -n              Disable binary patching\n"
+        << "  --same-machine  Force same-PC host mode (sets FORCE_LOCAL and addr fixups)\n"
+        << "  --local-host    Alias for --same-machine\n";
+}
+
+bool ParseWorkerLaunchOptions(int argc, char* argv[], WorkerLaunchOptions* optionsOut)
+{
+    if (argc < 2)
+    {
+        PrintUsage();
+        return false;
+    }
+
+    WorkerLaunchOptions options;
+    options.serverName = argv[1];
+
+    for (int i = 2; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "-n")
+        {
+            options.disablePatching = true;
+        }
+        else if (arg == "--same-machine" || arg == "--local-host")
+        {
+            options.sameMachineMode = true;
+        }
+        else
+        {
+            std::cerr << "NFSLAN: WARNING - unknown option '" << arg << "' ignored.\n";
+        }
+    }
+
+    *optionsOut = options;
+    return true;
+}
+
+bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options)
+{
+    const std::filesystem::path configPath = "server.cfg";
+    if (!std::filesystem::exists(configPath))
+    {
+        std::cerr << "NFSLAN: WARNING - server.cfg not found. Running with server.dll defaults.\n";
+        return true;
+    }
+
+    std::string configText;
+    if (!ReadTextFile(configPath, &configText))
+    {
+        std::cerr << "ERROR: Failed to read server.cfg.\n";
+        return false;
+    }
+
+    bool changed = false;
+    const auto currentFixups = GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS");
+    if (!currentFixups.has_value())
+    {
+        configText = UpsertConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS", "1");
+        changed = true;
+        std::cout << "NFSLAN: Added ENABLE_GAME_ADDR_FIXUPS=1 (recommended).\n";
+    }
+
+    if (options.sameMachineMode)
+    {
+        if (!IsTruthy(GetConfigValue(configText, "FORCE_LOCAL").value_or("0")))
+        {
+            configText = UpsertConfigValue(configText, "FORCE_LOCAL", "1");
+            changed = true;
+            std::cout << "NFSLAN: Same-machine mode enabled -> FORCE_LOCAL=1\n";
+        }
+
+        if (!IsTruthy(GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS").value_or("0")))
+        {
+            configText = UpsertConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS", "1");
+            changed = true;
+            std::cout << "NFSLAN: Same-machine mode enabled -> ENABLE_GAME_ADDR_FIXUPS=1\n";
+        }
+    }
+
+    const std::string addrValue = TrimAscii(GetConfigValue(configText, "ADDR").value_or(""));
+    if (!addrValue.empty())
+    {
+        if (addrValue == "0.0.0.0")
+        {
+            std::cout << "NFSLAN: NOTE - ADDR=0.0.0.0 is fine for local bind, but internet clients need a public endpoint.\n";
+        }
+        else if (!options.sameMachineMode && LooksPrivateOrNonRoutableIpv4(addrValue))
+        {
+            std::cout << "NFSLAN: NOTE - ADDR=" << addrValue
+                      << " is private/non-routable; remote internet players will not reach this directly.\n";
+        }
+        else if (!options.sameMachineMode && addrValue.find("%%bind(") != std::string::npos)
+        {
+            std::cout
+                << "NFSLAN: NOTE - ADDR uses %%bind(...), which usually resolves to a LAN IP. "
+                << "Use a public IP/DNS for internet hosting.\n";
+        }
+    }
+
+    const std::string portValue = TrimAscii(GetConfigValue(configText, "PORT").value_or(""));
+    if (options.sameMachineMode && portValue == "9900")
+    {
+        std::cout << "NFSLAN: NOTE - Same-machine mode with PORT=9900 can still conflict on some client patches. "
+                     "Try a different server PORT if local client cannot see/join.\n";
+    }
+
+    if (changed)
+    {
+        if (!WriteTextFile(configPath, configText))
+        {
+            std::cerr << "ERROR: Failed to update server.cfg.\n";
+            return false;
+        }
+        std::cout << "NFSLAN: Updated server.cfg compatibility flags.\n";
+    }
+
+    return true;
+}
+
+} // namespace
 
 // requires that the client is using the LanIP plugin!
 void LocalChallengeClient(uint32_t addr)
@@ -172,7 +516,8 @@ void PatchServerMW(uintptr_t base)
         {
             regs.eax = *(uint32_t*)(regs.edx + 0xA38);
             char* strSKU = (char*)(regs.eax + 0x80);
-            if (std::regex_match(strSKU, std::regex("^((25[0-5]|(2[0-4]|1[0-9]|[1-9]|)[0-9])(\.(?!$)|$)){4}$")))
+            static const std::regex kIpv4Regex(R"(^((25[0-5]|(2[0-4]|1[0-9]|[1-9]|)[0-9])(\.(?!$)|$)){4}$)");
+            if (std::regex_match(strSKU, kIpv4Regex))
             {
                 uint32_t connIP = *(uint32_t*)(regs.ebx + 0x14);
                 uint32_t incomingIP = 0;
@@ -321,18 +666,16 @@ int NFSLANWorkerMain(int argc, char* argv[])
 {
     std::cout << "NFS LAN Server Launcher\n";
 
-    if (argc < 2)
+    WorkerLaunchOptions options;
+    if (!ParseWorkerLaunchOptions(argc, argv, &options))
     {
-        std::cout << "USAGE: NFSLAN servername [-n]\n" << "-n = no server patching\n";
         return -1;
     }
 
-    if (argc >= 3)
+    bDisablePatching = options.disablePatching;
+    if (options.sameMachineMode)
     {
-        if (argv[2][0] == '-' && argv[2][1] == 'n')
-        {
-            bDisablePatching = true;
-        }
+        std::cout << "NFSLAN: Same-machine mode enabled.\n";
     }
 
     if (!std::filesystem::exists("server.dll"))
@@ -367,6 +710,11 @@ int NFSLANWorkerMain(int argc, char* argv[])
         return -1;
     }
 
+    if (!ApplyServerConfigCompatibility(options))
+    {
+        return -1;
+    }
+
     if (!bDisablePatching)
     {
         std::cout << "NFSLAN: Patching the server to work on any network...\n";
@@ -380,7 +728,7 @@ int NFSLANWorkerMain(int argc, char* argv[])
     signal(SIGINT, SigInterruptHandler);
     signal(SIGTERM, SigInterruptHandler);
 
-    if (!StartServer(argv[1], 0, nullptr, nullptr))
+    if (!StartServer(options.serverName.data(), 0, nullptr, nullptr))
     {
         std::cerr << "ERROR: could not launch server! StartServer returned false!\n";
         return -1;

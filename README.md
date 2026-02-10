@@ -10,6 +10,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 ## What is included
 
 - Native Win32 launcher (`NFSLAN-GUI`) with integrated `server.cfg` editor (no Qt runtime dependency)
+- Native Win32 launcher includes explicit `FORCE_LOCAL` and `ENABLE_GAME_ADDR_FIXUPS` toggles for same-machine host+client scenarios
 - Qt launcher (`NFSLAN-GUI`/`NFSLAN-NativeGUI` depending on build options) for cross-platform workflows
 - Windows single-executable mode: GUI + worker runtime embedded in the same EXE (Win32/x86 build)
 - Optional separate `NFSLAN` worker build on Windows in external-worker mode
@@ -33,7 +34,8 @@ Native Linux loading of this `server.dll` is not available in this project becau
    - native single EXE in Win32/x86 (embedded worker mode).
 2. Place game `server.dll` and `server.cfg` in a server folder.
 3. Open `NFSLAN-GUI`, choose game profile, set server name/path, and start.
-4. On Linux/macOS, install a Windows compatibility runtime and run the Windows build via Proton/Wine, or use the Qt launcher path.
+4. If host and client run on the same PC, enable `FORCE_LOCAL` and keep `ENABLE_GAME_ADDR_FIXUPS` enabled.
+5. On Linux/macOS, install a Windows compatibility runtime and run the Windows build via Proton/Wine, or use the Qt launcher path.
 
 ## Documentation
 

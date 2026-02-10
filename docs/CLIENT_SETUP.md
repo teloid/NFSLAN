@@ -22,6 +22,7 @@ Runtime note:
 3. Set at least these values in `server.cfg`:
    - `PORT=<public port>` (commonly `9900`)
    - `ADDR=<public server IP or DNS name>`
+   - `ENABLE_GAME_ADDR_FIXUPS=1` (recommended)
 4. Open/forward your server UDP port in firewall/router (at least the `PORT` value).
 5. Start the matching GUI profile:
    - `Need for Speed Most Wanted (2005)` with MW `server.dll`
@@ -29,6 +30,15 @@ Runtime note:
 6. Confirm logs do not advertise private-only slave address for internet clients.
    - Example bad for internet clients: `addr=192.168.x.x:9900`
    - Fix: set `ADDR` to public IP or DNS in `server.cfg`
+
+## Host plays on same machine
+
+If the server host also runs the game client on the same PC:
+
+1. Enable `FORCE_LOCAL=1` in `server.cfg` (or via the native GUI checkbox).
+2. Keep `ENABLE_GAME_ADDR_FIXUPS=1`.
+3. If client still cannot join, test a server `PORT` other than `9900`.
+4. Start the server with `--same-machine` when using console worker directly.
 
 ## Game-specific notes
 

@@ -34,6 +34,8 @@ enum ControlId : int
     kIdBrowseWorker,
     kIdPort,
     kIdAddr,
+    kIdForceLocal,
+    kIdEnableAddrFixups,
     kIdDisablePatching,
     kIdLoadConfig,
     kIdSaveConfig,
@@ -52,6 +54,8 @@ struct AppState
     HWND workerPathEdit = nullptr;
     HWND portEdit = nullptr;
     HWND addrEdit = nullptr;
+    HWND forceLocalCheck = nullptr;
+    HWND enableAddrFixupsCheck = nullptr;
     HWND disablePatchingCheck = nullptr;
     HWND configEditor = nullptr;
     HWND logView = nullptr;
@@ -246,6 +250,33 @@ bool equalCaseInsensitive(const std::wstring& a, const std::wstring& b)
     return true;
 }
 
+bool parseBoolConfigValue(const std::wstring& value, bool defaultValue)
+{
+    const std::wstring normalized = trim(value);
+    if (normalized.empty())
+    {
+        return defaultValue;
+    }
+
+    if (equalCaseInsensitive(normalized, L"1")
+        || equalCaseInsensitive(normalized, L"true")
+        || equalCaseInsensitive(normalized, L"yes")
+        || equalCaseInsensitive(normalized, L"on"))
+    {
+        return true;
+    }
+
+    if (equalCaseInsensitive(normalized, L"0")
+        || equalCaseInsensitive(normalized, L"false")
+        || equalCaseInsensitive(normalized, L"no")
+        || equalCaseInsensitive(normalized, L"off"))
+    {
+        return false;
+    }
+
+    return defaultValue;
+}
+
 bool parseConfigLine(const std::wstring& line, std::wstring* keyOut, std::wstring* valueOut)
 {
     std::wstring working = line;
@@ -377,6 +408,8 @@ void setUiRunningState(bool running)
     EnableWindow(GetDlgItem(g_app.window, kIdBrowseServerDir), running ? FALSE : TRUE);
     EnableWindow(g_app.portEdit, running ? FALSE : TRUE);
     EnableWindow(g_app.addrEdit, running ? FALSE : TRUE);
+    EnableWindow(g_app.forceLocalCheck, running ? FALSE : TRUE);
+    EnableWindow(g_app.enableAddrFixupsCheck, running ? FALSE : TRUE);
     EnableWindow(g_app.disablePatchingCheck, running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.window, kIdLoadConfig), running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.window, kIdSaveConfig), running ? FALSE : TRUE);
@@ -432,6 +465,12 @@ void syncFieldsFromConfigEditor()
     {
         setWindowTextString(g_app.addrEdit, addrValue);
     }
+
+    const bool forceLocalEnabled = parseBoolConfigValue(getConfigValue(configText, L"FORCE_LOCAL"), false);
+    SendMessageW(g_app.forceLocalCheck, BM_SETCHECK, forceLocalEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+
+    const bool addrFixupsEnabled = parseBoolConfigValue(getConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS"), true);
+    SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, addrFixupsEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 void applyFieldsToConfigEditor()
@@ -450,6 +489,12 @@ void applyFieldsToConfigEditor()
     {
         configText = upsertConfigValue(configText, L"ADDR", addrValue);
     }
+
+    const bool forceLocalEnabled = (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    configText = upsertConfigValue(configText, L"FORCE_LOCAL", forceLocalEnabled ? L"1" : L"0");
+
+    const bool addrFixupsEnabled = (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    configText = upsertConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS", addrFixupsEnabled ? L"1" : L"0");
 
     setWindowTextString(g_app.configEditor, configText);
 }
@@ -695,6 +740,11 @@ void startWorker()
         commandLine += L" -n";
     }
 
+    if (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED)
+    {
+        commandLine += L" --same-machine";
+    }
+
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
@@ -769,6 +819,16 @@ void saveSettings()
     WritePrivateProfileStringW(L"launcher", L"addr", trim(getWindowTextString(g_app.addrEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(
         L"launcher",
+        L"forceLocal",
+        (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
+        path.c_str());
+    WritePrivateProfileStringW(
+        L"launcher",
+        L"enableAddrFixups",
+        (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
+        path.c_str());
+    WritePrivateProfileStringW(
+        L"launcher",
         L"disablePatching",
         (SendMessageW(g_app.disablePatchingCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
         path.c_str());
@@ -794,6 +854,16 @@ void loadSettings()
     setWindowTextString(g_app.serverDirEdit, readIniValue(L"serverDir", getWindowTextString(g_app.serverDirEdit)));
     setWindowTextString(g_app.portEdit, readIniValue(L"port", L"9900"));
     setWindowTextString(g_app.addrEdit, readIniValue(L"addr", L"0.0.0.0"));
+    SendMessageW(
+        g_app.forceLocalCheck,
+        BM_SETCHECK,
+        (readIniValue(L"forceLocal", L"0") == L"1") ? BST_CHECKED : BST_UNCHECKED,
+        0);
+    SendMessageW(
+        g_app.enableAddrFixupsCheck,
+        BM_SETCHECK,
+        (readIniValue(L"enableAddrFixups", L"1") == L"1") ? BST_CHECKED : BST_UNCHECKED,
+        0);
 
     const bool disablePatching = (readIniValue(L"disablePatching", L"0") == L"1");
     SendMessageW(g_app.disablePatchingCheck, BM_SETCHECK, disablePatching ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -999,14 +1069,48 @@ void createUi(HWND window)
         nullptr);
     applyDefaultFontToWindow(g_app.addrEdit);
 
+    g_app.forceLocalCheck = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"FORCE_LOCAL",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        left + 470,
+        y,
+        170,
+        rowHeight,
+        window,
+        reinterpret_cast<HMENU>(kIdForceLocal),
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.forceLocalCheck);
+    SendMessageW(g_app.forceLocalCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+
+    g_app.enableAddrFixupsCheck = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"ENABLE_GAME_ADDR_FIXUPS",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        left + 650,
+        y,
+        320,
+        rowHeight,
+        window,
+        reinterpret_cast<HMENU>(kIdEnableAddrFixups),
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.enableAddrFixupsCheck);
+    SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, BST_CHECKED, 0);
+
+    y += rowHeight + rowGap;
+
     g_app.disablePatchingCheck = CreateWindowExW(
         0,
         L"BUTTON",
         L"Disable binary patching (-n)",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        left + 470,
+        left,
         y,
-        220,
+        260,
         rowHeight,
         window,
         reinterpret_cast<HMENU>(kIdDisablePatching),

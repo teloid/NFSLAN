@@ -14,6 +14,7 @@ This fork includes AI-assisted implementation and documentation updates while pr
   - Loads `server.dll`
   - Resolves `StartServer`, `IsServerRunning`, `StopServer`
   - Applies Most Wanted runtime patching (injector/hooking)
+  - Applies startup `server.cfg` compatibility preflight (`ENABLE_GAME_ADDR_FIXUPS`, optional same-machine `FORCE_LOCAL`)
 
 ## Runtime models
 
@@ -32,3 +33,12 @@ This fork includes AI-assisted implementation and documentation updates while pr
 - Implement Underground 2 patching in worker (`PatchServerUG2`).
 - Add richer config schema and validation in native GUI.
 - Add packaged installer workflow for portable distribution.
+
+## Reverse-engineering notes currently used
+
+From decompiled `server.dll`, two config toggles are now surfaced and used in launcher flow:
+
+- `FORCE_LOCAL`
+- `ENABLE_GAME_ADDR_FIXUPS`
+
+The launcher uses these to improve same-machine host+client behavior without hardcoding binary offsets for this part.
