@@ -16,6 +16,7 @@
 #include <iomanip>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 #include <filesystem>
 #include <atomic>
 #include <signal.h>
@@ -60,6 +61,11 @@ constexpr int kLanDiscoveryPort = 9999;
 
 std::atomic<bool> gLanBridgeRunning{ false };
 std::thread gLanBridgeThread;
+
+using SendToFn = int (WSAAPI*)(SOCKET, const char*, int, int, const sockaddr*, int);
+SendToFn gOriginalSendTo = nullptr;
+std::atomic<bool> gSendToHookInstalled{ false };
+std::atomic<int> gUg2BeaconPatchedCount{ 0 };
 
 std::string TrimAscii(const std::string& input)
 {
@@ -321,6 +327,179 @@ std::optional<std::string> ResolveCompatibleGameReportFile(const std::string& co
     }
 
     return std::nullopt;
+}
+
+bool LooksLikeUg2LanBeacon(const char* payload, int length)
+{
+    if (!payload || length != 0x180)
+    {
+        return false;
+    }
+
+    if (!(payload[0] == 'g' && payload[1] == 'E' && payload[2] == 'A'))
+    {
+        return false;
+    }
+
+    if (static_cast<unsigned char>(payload[3]) != 0x03)
+    {
+        return false;
+    }
+
+    return std::memcmp(payload + 8, "NFSU2NA", 7) == 0;
+}
+
+bool PatchUg2LanBeaconCount(char* payload, int length)
+{
+    if (!LooksLikeUg2LanBeacon(payload, length))
+    {
+        return false;
+    }
+
+    constexpr size_t statsOffset = 0x48;
+    constexpr size_t statsMax = 0xC0;
+    size_t statsLen = 0;
+    while (statsLen < statsMax && payload[statsOffset + statsLen] != '\0')
+    {
+        ++statsLen;
+    }
+
+    if (statsLen == 0 || statsLen >= statsMax)
+    {
+        return false;
+    }
+
+    std::string stats(payload + statsOffset, payload + statsOffset + statsLen);
+    const size_t pipePos = stats.find('|');
+    if (pipePos == std::string::npos)
+    {
+        return false;
+    }
+
+    const std::string before = stats.substr(0, pipePos);
+    const std::string after = stats.substr(pipePos + 1);
+    if (after != "0")
+    {
+        return false;
+    }
+
+    const std::string patchedStats = before + "|1";
+    if (patchedStats.size() >= statsMax)
+    {
+        return false;
+    }
+
+    std::memset(payload + statsOffset, 0, statsMax);
+    std::memcpy(payload + statsOffset, patchedStats.c_str(), patchedStats.size());
+    return true;
+}
+
+int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const sockaddr* to, int tolen)
+{
+    if (!gOriginalSendTo)
+    {
+        return SOCKET_ERROR;
+    }
+
+    if (LooksLikeUg2LanBeacon(buf, len))
+    {
+        std::array<char, 0x180> patched{};
+        std::memcpy(patched.data(), buf, patched.size());
+        if (PatchUg2LanBeaconCount(patched.data(), len))
+        {
+            const int patchIndex = ++gUg2BeaconPatchedCount;
+            if (patchIndex <= 3)
+            {
+                std::cout << "NFSLAN: Patched UG2 LAN beacon stats to advertise at least one slot.\n";
+            }
+            return gOriginalSendTo(s, patched.data(), static_cast<int>(patched.size()), flags, to, tolen);
+        }
+    }
+
+    return gOriginalSendTo(s, buf, len, flags, to, tolen);
+}
+
+bool InstallSendToHook(HMODULE moduleHandle)
+{
+    if (!moduleHandle || gSendToHookInstalled.load())
+    {
+        return true;
+    }
+
+    const auto base = reinterpret_cast<std::uint8_t*>(moduleHandle);
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        std::cerr << "NFSLAN: WARNING - cannot install sendto hook: invalid DOS header.\n";
+        return false;
+    }
+
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (!nt || nt->Signature != IMAGE_NT_SIGNATURE)
+    {
+        std::cerr << "NFSLAN: WARNING - cannot install sendto hook: invalid NT header.\n";
+        return false;
+    }
+
+    const IMAGE_DATA_DIRECTORY importDir =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (importDir.VirtualAddress == 0 || importDir.Size == 0)
+    {
+        std::cerr << "NFSLAN: WARNING - cannot install sendto hook: import table missing.\n";
+        return false;
+    }
+
+    auto* descriptor = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + importDir.VirtualAddress);
+    for (; descriptor->Name != 0; ++descriptor)
+    {
+        const auto* dllName = reinterpret_cast<const char*>(base + descriptor->Name);
+        if (!dllName || !EqualsIgnoreCase(dllName, "ws2_32.dll"))
+        {
+            continue;
+        }
+
+        auto* originalThunk = descriptor->OriginalFirstThunk != 0
+            ? reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->OriginalFirstThunk)
+            : reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->FirstThunk);
+        auto* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->FirstThunk);
+
+        for (; originalThunk->u1.AddressOfData != 0; ++originalThunk, ++thunk)
+        {
+            if (IMAGE_SNAP_BY_ORDINAL(originalThunk->u1.Ordinal))
+            {
+                continue;
+            }
+
+            const auto* importByName =
+                reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(base + originalThunk->u1.AddressOfData);
+            const char* functionName = reinterpret_cast<const char*>(importByName->Name);
+            if (!functionName || std::strcmp(functionName, "sendto") != 0)
+            {
+                continue;
+            }
+
+            DWORD oldProtect = 0;
+            if (!VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), PAGE_READWRITE, &oldProtect))
+            {
+                std::cerr << "NFSLAN: WARNING - cannot install sendto hook: VirtualProtect failed.\n";
+                return false;
+            }
+
+            gOriginalSendTo = reinterpret_cast<SendToFn>(thunk->u1.Function);
+            thunk->u1.Function = reinterpret_cast<ULONG_PTR>(&HookedSendTo);
+
+            DWORD restoreProtect = 0;
+            VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), oldProtect, &restoreProtect);
+            FlushInstructionCache(GetCurrentProcess(), &thunk->u1.Function, sizeof(thunk->u1.Function));
+
+            gSendToHookInstalled.store(true);
+            std::cout << "NFSLAN: Installed UG2 sendto beacon compatibility hook.\n";
+            return true;
+        }
+    }
+
+    std::cerr << "NFSLAN: WARNING - could not find ws2_32!sendto import to hook.\n";
+    return false;
 }
 
 bool IsLanDiscoveryPacket(const char* data, int length)
@@ -1216,6 +1395,11 @@ int NFSLANWorkerMain(int argc, char* argv[])
     if (!ApplyServerConfigCompatibility(options, underground2Server))
     {
         return -1;
+    }
+
+    if (underground2Server)
+    {
+        InstallSendToHook(serverdll);
     }
 
     if (!bDisablePatching)
