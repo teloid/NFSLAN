@@ -17,14 +17,21 @@ Do not run server directly from your game installation folder; use a separate se
 2. Select profile:
    - Most Wanted (2005): use MW `server.dll`
    - Underground 2: use UG2 `server.dll`
+   - If `MW`/`U2` subfolders exist next to the GUI EXE, launcher auto-selects them as profile defaults.
 3. Set `Server name`.
 4. Set `Server directory` where `server.dll` and `server.cfg` exist.
 5. Configure `PORT` and `ADDR` fields.
 6. Configure compatibility flags:
-   - `FORCE_LOCAL`: enable when hosting and playing from the same machine
+   - `FORCE_LOCAL`: enable when hosting and playing from the same machine (UI also switches `ADDR` to `127.0.0.1`)
    - `ENABLE_GAME_ADDR_FIXUPS`: keep enabled (recommended for mixed local/public address setups)
 7. Edit advanced keys in `server.cfg` editor and save.
 8. Start server.
+9. Verify startup diagnostics in GUI log:
+   - UI build tag
+   - executable path
+   - worker launch mode
+   - selected profile
+   - effective server directory and `server.cfg` path
 
 ## Worker mode behavior
 
@@ -35,7 +42,7 @@ Do not run server directly from your game installation folder; use a separate se
 - Worker applies profile-specific config normalization:
   - MW: keeps `ENABLE_GAME_ADDR_FIXUPS` enabled and mirrors `ADDR/PORT` to MW auxiliary keys.
   - UG2: mirrors `ADDR/PORT` to UG2 keys (`MADDR/RADDR/AADDR`, `MPORT/RPORT/APORT`) when missing.
-  - Both profiles: ensures non-empty `LOBBY_IDENT`/`LOBBY` defaults (`NFSMW` for MW, `NFSU` for UG2) when missing.
+  - Both profiles: ensures non-empty `LOBBY_IDENT`/`LOBBY` defaults (`NFSMWNA` for MW, `NFSU2NA` for UG2) when missing.
 - Worker validates game report file header (`ident=0x9A3E`, `version=2`) and auto-selects compatible file from `GAMEFILE`, `gamefile.bin`, `gameplay.bin`.
 
 ## Internet notes

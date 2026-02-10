@@ -22,8 +22,8 @@ Runtime note:
 3. Set at least these values in `server.cfg`:
    - `PORT=<public port>` (commonly `9900`)
    - `ADDR=<public server IP or DNS name>`
-   - `LOBBY_IDENT=<game lobby ident>` (launcher now auto-fills missing value)
-   - `LOBBY=<game lobby ident>` (launcher now auto-fills missing value)
+   - `LOBBY_IDENT=<game lobby ident>` (`NFSMWNA` for MW, `NFSU2NA` for UG2 if missing)
+   - `LOBBY=<game lobby ident>` (`NFSMWNA` for MW, `NFSU2NA` for UG2 if missing)
    - `ENABLE_GAME_ADDR_FIXUPS=1` (recommended)
    - `GAMEFILE=<valid game report file>` (must match header expected by server.dll)
 4. Open/forward your server UDP port in firewall/router (at least the `PORT` value).
@@ -38,7 +38,7 @@ Runtime note:
 
 If the server host also runs the game client on the same PC:
 
-1. Enable `FORCE_LOCAL=1` in `server.cfg` (or via the native GUI checkbox).
+1. Enable `FORCE_LOCAL=1` in `server.cfg` (or via native GUI `Same-machine mode`, which also sets `ADDR=127.0.0.1`).
 2. Keep `ENABLE_GAME_ADDR_FIXUPS=1`.
 3. If client still cannot join, test a server `PORT` other than `9900`.
 4. Start the server with `--same-machine` when using console worker directly.
@@ -86,7 +86,7 @@ Use hostnames required by your chosen client patch package (they are not defined
 
 ## Internet troubleshooting quick checks
 
-1. Verify server logs in `NFSLAN-GUI` show clean startup.
+1. Verify server logs in `NFSLAN-GUI` show clean startup and expected build/runtime diagnostics (build tag + executable path + profile).
 2. Confirm firewall/router forwarding to the server machine for your configured UDP port(s).
 3. Confirm all players use the same game version + same client patch package.
 4. Confirm public IP/DNS in `server.cfg` (`ADDR`) is reachable from outside your LAN.

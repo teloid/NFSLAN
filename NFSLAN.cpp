@@ -58,7 +58,7 @@ struct WorkerLaunchOptions
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-10-ug2diag-2";
+constexpr const char* kBuildTag = "2026-02-10-ug2diag-3";
 
 std::atomic<bool> gLanBridgeRunning{ false };
 std::thread gLanBridgeThread;
@@ -516,14 +516,19 @@ bool InstallSendToHook(HMODULE moduleHandle)
     for (; descriptor->Name != 0; ++descriptor)
     {
         const auto* dllName = reinterpret_cast<const char*>(base + descriptor->Name);
-        if (!dllName || !EqualsIgnoreCase(dllName, "ws2_32.dll"))
+        if (!dllName
+            || (!EqualsIgnoreCase(dllName, "ws2_32.dll") && !EqualsIgnoreCase(dllName, "wsock32.dll")))
         {
             continue;
         }
 
-        auto* originalThunk = descriptor->OriginalFirstThunk != 0
-            ? reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->OriginalFirstThunk)
-            : reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->FirstThunk);
+        if (descriptor->OriginalFirstThunk == 0)
+        {
+            // Bound imports may not preserve name table; pointer-match fallback below handles this case.
+            continue;
+        }
+
+        auto* originalThunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->OriginalFirstThunk);
         auto* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->FirstThunk);
 
         for (; originalThunk->u1.AddressOfData != 0; ++originalThunk, ++thunk)
@@ -536,10 +541,19 @@ bool InstallSendToHook(HMODULE moduleHandle)
             const auto* importByName =
                 reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(base + originalThunk->u1.AddressOfData);
             const char* functionName = reinterpret_cast<const char*>(importByName->Name);
-            if (!functionName || std::strcmp(functionName, "sendto") != 0)
+            if (!functionName)
             {
                 continue;
             }
+
+            const std::string fn(functionName);
+            if (!(EqualsIgnoreCase(fn, "sendto")
+                || EqualsIgnoreCase(fn, "_sendto@24")
+                || EqualsIgnoreCase(fn, "__imp_sendto")))
+            {
+                continue;
+            }
+
             return patchThunk(thunk, "named import");
         }
     }
@@ -638,6 +652,7 @@ void RunLanDiscoveryLoopbackBridge()
         bool loggedFirstResponse = false;
         bool loggedSendError = false;
         bool loggedBroadcastError = false;
+        bool loggedBridgePatch = false;
         int silentCycles = 0;
 
         while (gLanBridgeRunning.load())
@@ -690,6 +705,16 @@ void RunLanDiscoveryLoopbackBridge()
                 if (response[8] == '?')
                 {
                     continue;
+                }
+
+                if (PatchUg2LanBeaconCount(response.data(), received))
+                {
+                    const int patchIndex = ++gUg2BeaconPatchedCount;
+                    if (patchIndex <= 3 || !loggedBridgePatch)
+                    {
+                        loggedBridgePatch = true;
+                        std::cout << "NFSLAN: Patched UG2 LAN beacon stats in LAN bridge response.\n";
+                    }
                 }
 
                 forwardedAny = true;

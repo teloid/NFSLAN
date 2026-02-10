@@ -12,6 +12,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #if defined(NFSLAN_NATIVE_EMBED_WORKER)
@@ -23,6 +24,9 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
+constexpr wchar_t kUiBuildTag[] = L"2026-02-10-native-ui-rework-1";
+constexpr int kGameProfileMostWanted = 0;
+constexpr int kGameProfileUnderground2 = 1;
 
 enum ControlId : int
 {
@@ -59,6 +63,7 @@ struct AppState
     HWND disablePatchingCheck = nullptr;
     HWND configEditor = nullptr;
     HWND logView = nullptr;
+    HWND runtimeSummaryLabel = nullptr;
     HWND startButton = nullptr;
     HWND stopButton = nullptr;
 
@@ -69,6 +74,7 @@ struct AppState
     HANDLE logReaderThread = nullptr;
 
     bool running = false;
+    int lastGameProfile = kGameProfileMostWanted;
     std::wstring exePath;
     std::wstring pendingLogLine;
 };
@@ -385,6 +391,186 @@ std::filesystem::path settingsPath()
     return exeDirectory() / "NFSLAN-native.ini";
 }
 
+std::wstring normalizePathForCompare(const std::filesystem::path& path)
+{
+    if (path.empty())
+    {
+        return L"";
+    }
+
+    std::error_code ec;
+    const std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
+    std::wstring normalized = ec ? path.lexically_normal().wstring() : canonical.wstring();
+    std::transform(
+        normalized.begin(),
+        normalized.end(),
+        normalized.begin(),
+        [](wchar_t ch)
+        {
+            return towlower(ch);
+        });
+    return normalized;
+}
+
+bool pathsLookEquivalent(const std::filesystem::path& a, const std::filesystem::path& b)
+{
+    if (a.empty() || b.empty())
+    {
+        return false;
+    }
+
+    return normalizePathForCompare(a) == normalizePathForCompare(b);
+}
+
+int currentGameProfileIndex()
+{
+    const LRESULT selectedIndex = SendMessageW(g_app.gameCombo, CB_GETCURSEL, 0, 0);
+    if (selectedIndex == kGameProfileUnderground2)
+    {
+        return kGameProfileUnderground2;
+    }
+
+    return kGameProfileMostWanted;
+}
+
+std::wstring gameProfileDisplayName(int profileIndex)
+{
+    if (profileIndex == kGameProfileUnderground2)
+    {
+        return L"Underground 2";
+    }
+
+    return L"Most Wanted";
+}
+
+std::wstring defaultServerNameForProfile(int profileIndex)
+{
+    if (profileIndex == kGameProfileUnderground2)
+    {
+        return L"UG2 Dedicated Server";
+    }
+
+    return L"MW Dedicated Server";
+}
+
+std::wstring profileFolderName(int profileIndex)
+{
+    if (profileIndex == kGameProfileUnderground2)
+    {
+        return L"U2";
+    }
+
+    return L"MW";
+}
+
+std::filesystem::path defaultServerDirectoryForProfile(int profileIndex)
+{
+    const std::filesystem::path profileDir = exeDirectory() / profileFolderName(profileIndex);
+    std::error_code ec;
+    if (std::filesystem::is_directory(profileDir, ec))
+    {
+        return profileDir;
+    }
+
+    return exeDirectory();
+}
+
+std::wstring workerLaunchModeLabel()
+{
+#if defined(NFSLAN_NATIVE_EMBED_WORKER)
+    return L"embedded worker (single EXE)";
+#else
+    return L"external worker executable";
+#endif
+}
+
+std::wstring runtimeSummaryText()
+{
+    return L"Build: " + std::wstring(kUiBuildTag) + L"  |  Worker mode: " + workerLaunchModeLabel();
+}
+
+void refreshRuntimeSummaryLabel()
+{
+    if (g_app.runtimeSummaryLabel)
+    {
+        setWindowTextString(g_app.runtimeSummaryLabel, runtimeSummaryText());
+    }
+}
+
+bool applyProfileDefaultsForSelectedGame(bool forceServerName, bool forceServerDirectory)
+{
+    const int selectedProfile = currentGameProfileIndex();
+    const std::wstring oldDefaultServerName = defaultServerNameForProfile(g_app.lastGameProfile);
+    const std::wstring newDefaultServerName = defaultServerNameForProfile(selectedProfile);
+
+    const std::wstring currentServerName = trim(getWindowTextString(g_app.serverNameEdit));
+    if (forceServerName
+        || currentServerName.empty()
+        || equalCaseInsensitive(currentServerName, oldDefaultServerName))
+    {
+        setWindowTextString(g_app.serverNameEdit, newDefaultServerName);
+    }
+
+    const std::filesystem::path selectedDefaultServerDir = defaultServerDirectoryForProfile(selectedProfile);
+    const std::filesystem::path previousDefaultServerDir = defaultServerDirectoryForProfile(g_app.lastGameProfile);
+    const std::filesystem::path currentServerDir = currentServerDirectory();
+
+    bool shouldReplaceServerDirectory = forceServerDirectory;
+    if (!shouldReplaceServerDirectory)
+    {
+        const std::wstring rawServerDir = trim(getWindowTextString(g_app.serverDirEdit));
+        if (rawServerDir.empty())
+        {
+            shouldReplaceServerDirectory = true;
+        }
+        else
+        {
+            std::error_code ec;
+            const bool currentExists = std::filesystem::exists(currentServerDir, ec);
+            if (!currentExists)
+            {
+                shouldReplaceServerDirectory = true;
+            }
+            else if (pathsLookEquivalent(currentServerDir, previousDefaultServerDir))
+            {
+                shouldReplaceServerDirectory = true;
+            }
+        }
+    }
+
+    bool serverDirectoryChanged = false;
+    if (shouldReplaceServerDirectory && !pathsLookEquivalent(currentServerDir, selectedDefaultServerDir))
+    {
+        setWindowTextString(g_app.serverDirEdit, selectedDefaultServerDir.wstring());
+        serverDirectoryChanged = true;
+    }
+
+    g_app.lastGameProfile = selectedProfile;
+    return serverDirectoryChanged;
+}
+
+void appendUiRuntimeContext()
+{
+    appendLogLine(L"UI build tag: " + std::wstring(kUiBuildTag));
+    appendLogLine(L"UI executable: " + g_app.exePath);
+
+    std::error_code ec;
+    const std::filesystem::path workingDirectory = std::filesystem::current_path(ec);
+    if (ec)
+    {
+        appendLogLine(L"Working directory: <unavailable>");
+    }
+    else
+    {
+        appendLogLine(L"Working directory: " + workingDirectory.wstring());
+    }
+
+    appendLogLine(L"Worker launch mode: " + workerLaunchModeLabel());
+    appendLogLine(L"Selected profile: " + gameProfileDisplayName(currentGameProfileIndex()));
+    appendLogLine(L"Server directory: " + currentServerDirectory().wstring());
+    appendLogLine(L"Server config: " + currentServerConfigPath().wstring());
+}
+
 void showError(const std::wstring& message)
 {
     MessageBoxW(g_app.window, message.c_str(), L"NFSLAN", MB_ICONERROR | MB_OK);
@@ -393,6 +579,29 @@ void showError(const std::wstring& message)
 void showInfo(const std::wstring& message)
 {
     MessageBoxW(g_app.window, message.c_str(), L"NFSLAN", MB_ICONINFORMATION | MB_OK);
+}
+
+std::wstring formatWin32Error(DWORD errorCode)
+{
+    wchar_t* buffer = nullptr;
+    const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+    const DWORD language = MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT);
+    const DWORD messageLength = FormatMessageW(
+        flags,
+        nullptr,
+        errorCode,
+        language,
+        reinterpret_cast<LPWSTR>(&buffer),
+        0,
+        nullptr);
+    if (messageLength == 0 || !buffer)
+    {
+        return L"Unknown error";
+    }
+
+    std::wstring message(buffer, buffer + messageLength);
+    LocalFree(buffer);
+    return trim(message);
 }
 
 void setUiRunningState(bool running)
@@ -723,6 +932,7 @@ void startWorker()
 
     const std::wstring serverName = trim(getWindowTextString(g_app.serverNameEdit));
     const std::filesystem::path serverDir = currentServerDirectory();
+    const std::wstring profileName = gameProfileDisplayName(currentGameProfileIndex());
 
     std::wstring executablePath;
     std::wstring commandLine;
@@ -744,6 +954,12 @@ void startWorker()
     {
         commandLine += L" --same-machine";
     }
+
+    appendLogLine(L"UI build tag: " + std::wstring(kUiBuildTag));
+    appendLogLine(L"Profile: " + profileName);
+    appendLogLine(L"Worker launch mode: " + workerLaunchModeLabel());
+    appendLogLine(L"Server directory: " + serverDir.wstring());
+    appendLogLine(L"Server config: " + currentServerConfigPath().wstring());
 
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
@@ -788,8 +1004,13 @@ void startWorker()
 
     if (!created)
     {
+        const DWORD errorCode = GetLastError();
         cleanupWorkerResources();
-        showError(L"Failed to start worker process.");
+        const std::wstring errorDetails =
+            L"Failed to start worker process. Win32 error " + std::to_wstring(errorCode) + L": "
+            + formatWin32Error(errorCode);
+        appendLogLine(errorDetails);
+        showError(errorDetails);
         return;
     }
 
@@ -848,7 +1069,10 @@ std::wstring readIniValue(const std::wstring& key, const std::wstring& fallback)
 void loadSettings()
 {
     const int gameIndex = _wtoi(readIniValue(L"gameIndex", L"0").c_str());
-    SendMessageW(g_app.gameCombo, CB_SETCURSEL, (gameIndex >= 0 && gameIndex <= 1) ? gameIndex : 0, 0);
+    const int normalizedGameIndex =
+        (gameIndex == kGameProfileUnderground2) ? kGameProfileUnderground2 : kGameProfileMostWanted;
+    SendMessageW(g_app.gameCombo, CB_SETCURSEL, normalizedGameIndex, 0);
+    g_app.lastGameProfile = normalizedGameIndex;
 
     setWindowTextString(g_app.serverNameEdit, readIniValue(L"serverName", getWindowTextString(g_app.serverNameEdit)));
     setWindowTextString(g_app.serverDirEdit, readIniValue(L"serverDir", getWindowTextString(g_app.serverDirEdit)));
@@ -871,19 +1095,35 @@ void loadSettings()
 #if !defined(NFSLAN_NATIVE_EMBED_WORKER)
     setWindowTextString(g_app.workerPathEdit, readIniValue(L"workerPath", getWindowTextString(g_app.workerPathEdit)));
 #endif
+
+    const bool changedDir = applyProfileDefaultsForSelectedGame(false, false);
+    if (changedDir)
+    {
+        appendLogLine(L"Profile default server directory applied: " + currentServerDirectory().wstring());
+    }
+
+    refreshRuntimeSummaryLabel();
 }
 
-void updateDefaultServerNameForGame()
+void updateDefaultsForCurrentGame(bool logChanges)
 {
-    const LRESULT selectedIndex = SendMessageW(g_app.gameCombo, CB_GETCURSEL, 0, 0);
-    if (selectedIndex == 1)
+    const int selectedProfile = currentGameProfileIndex();
+    const bool changedDir = applyProfileDefaultsForSelectedGame(false, false);
+    if (changedDir)
     {
-        setWindowTextString(g_app.serverNameEdit, L"UG2 Dedicated Server");
+        loadServerConfig(false);
     }
-    else
+
+    if (logChanges)
     {
-        setWindowTextString(g_app.serverNameEdit, L"MW Dedicated Server");
+        appendLogLine(L"Selected profile: " + gameProfileDisplayName(selectedProfile));
+        if (changedDir)
+        {
+            appendLogLine(L"Server directory switched to profile default: " + currentServerDirectory().wstring());
+        }
     }
+
+    refreshRuntimeSummaryLabel();
 }
 
 void createLabel(HWND parent, const wchar_t* text, int x, int y, int width, int height)
@@ -953,7 +1193,7 @@ void createUi(HWND window)
     g_app.serverDirEdit = CreateWindowExW(
         WS_EX_CLIENTEDGE,
         L"EDIT",
-        exeDirectory().wstring().c_str(),
+        defaultServerDirectoryForProfile(kGameProfileMostWanted).wstring().c_str(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
         left + labelWidth,
         y,
@@ -1037,6 +1277,23 @@ void createUi(HWND window)
 
     y += rowHeight + rowGap;
 
+    g_app.runtimeSummaryLabel = CreateWindowExW(
+        0,
+        L"STATIC",
+        runtimeSummaryText().c_str(),
+        WS_CHILD | WS_VISIBLE,
+        left,
+        y + 4,
+        960,
+        rowHeight,
+        window,
+        nullptr,
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.runtimeSummaryLabel);
+
+    y += rowHeight + rowGap;
+
     createLabel(window, L"PORT", left, y + 4, 40, rowHeight);
     g_app.portEdit = CreateWindowExW(
         WS_EX_CLIENTEDGE,
@@ -1072,11 +1329,11 @@ void createUi(HWND window)
     g_app.forceLocalCheck = CreateWindowExW(
         0,
         L"BUTTON",
-        L"FORCE_LOCAL",
+        L"Same-machine mode (--same-machine)",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         left + 470,
         y,
-        170,
+        230,
         rowHeight,
         window,
         reinterpret_cast<HMENU>(kIdForceLocal),
@@ -1090,9 +1347,9 @@ void createUi(HWND window)
         L"BUTTON",
         L"ENABLE_GAME_ADDR_FIXUPS",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        left + 650,
+        left + 710,
         y,
-        320,
+        250,
         rowHeight,
         window,
         reinterpret_cast<HMENU>(kIdEnableAddrFixups),
@@ -1233,7 +1490,35 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
     case kIdGameCombo:
         if (commandCode == CBN_SELCHANGE)
         {
-            updateDefaultServerNameForGame();
+            updateDefaultsForCurrentGame(true);
+        }
+        return 0;
+
+    case kIdForceLocal:
+        if (commandCode == BN_CLICKED)
+        {
+            const bool enabled = (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            if (enabled)
+            {
+                SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, BST_CHECKED, 0);
+                setWindowTextString(g_app.addrEdit, L"127.0.0.1");
+                appendLogLine(L"Same-machine mode enabled: FORCE_LOCAL=1, ADDR=127.0.0.1, ENABLE_GAME_ADDR_FIXUPS=1");
+            }
+            else
+            {
+                appendLogLine(L"Same-machine mode disabled in UI.");
+            }
+            applyFieldsToConfigEditor();
+        }
+        return 0;
+
+    case kIdEnableAddrFixups:
+        if (commandCode == BN_CLICKED)
+        {
+            const bool enabled = (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            appendLogLine(
+                std::wstring(L"ENABLE_GAME_ADDR_FIXUPS set to ") + (enabled ? L"1" : L"0") + L" in UI.");
+            applyFieldsToConfigEditor();
         }
         return 0;
 
@@ -1295,6 +1580,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         loadSettings();
         loadServerConfig(false);
         appendLogLine(L"Native Win32 UI initialized");
+        appendUiRuntimeContext();
         return 0;
 
     case WM_COMMAND:
@@ -1419,19 +1705,22 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
 
     RegisterClassExW(&wc);
 
+    std::wstring windowTitle;
+#if defined(NFSLAN_NATIVE_EMBED_WORKER)
+    windowTitle = L"NFSLAN Native Server Manager (Embedded Worker) [" + std::wstring(kUiBuildTag) + L"]";
+#else
+    windowTitle = L"NFSLAN Native Server Manager [" + std::wstring(kUiBuildTag) + L"]";
+#endif
+
     HWND window = CreateWindowExW(
         0,
         kWindowClassName,
-#if defined(NFSLAN_NATIVE_EMBED_WORKER)
-        L"NFSLAN Native Server Manager (Embedded Worker)",
-#else
-        L"NFSLAN Native Server Manager",
-#endif
+        windowTitle.c_str(),
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         1000,
-        860,
+        910,
         nullptr,
         nullptr,
         instance,

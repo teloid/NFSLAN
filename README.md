@@ -11,12 +11,13 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 
 - Native Win32 launcher (`NFSLAN-GUI`) with integrated `server.cfg` editor (no Qt runtime dependency)
 - Native Win32 launcher includes explicit `FORCE_LOCAL` and `ENABLE_GAME_ADDR_FIXUPS` toggles for same-machine host+client scenarios
+- Native Win32 launcher logs build tag, executable path, worker launch mode, and effective profile/runtime paths at startup
 - Qt launcher (`NFSLAN-GUI`/`NFSLAN-NativeGUI` depending on build options) for cross-platform workflows
 - Windows single-executable mode: GUI + worker runtime embedded in the same EXE (Win32/x86 build)
 - Optional separate `NFSLAN` worker build on Windows in external-worker mode
 - Existing injector/hooking code used by the worker for Most Wanted patching
 - Worker-side MW/UG2 config normalization and game-report file header validation (`gamefile.bin` / `gameplay.bin`)
-- Worker now auto-fills missing `LOBBY_IDENT`/`LOBBY` defaults (`NFSU` or `NFSMW`) and can run a same-machine LAN discovery loopback bridge on UDP `9999`
+- Worker now auto-fills missing `LOBBY_IDENT`/`LOBBY` defaults (`NFSU2NA` for UG2, `NFSMWNA` for MW) and can run a same-machine LAN discovery loopback bridge on UDP `9999`
 
 ## Important platform reality
 
