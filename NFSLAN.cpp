@@ -71,7 +71,7 @@ struct WorkerResolvedSettings
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-10-ug2diag-4";
+constexpr const char* kBuildTag = "2026-02-10-ug2diag-5";
 
 std::atomic<bool> gLanBridgeRunning{ false };
 std::thread gLanBridgeThread;
@@ -82,6 +82,8 @@ std::atomic<bool> gSendToHookInstalled{ false };
 std::atomic<int> gUg2BeaconPatchedCount{ 0 };
 std::atomic<bool> gLanDiagEnabled{ false };
 std::atomic<int> gLanDiagBeaconLogCount{ 0 };
+std::atomic<bool> gSameMachineModeEnabled{ false };
+std::atomic<bool> gLoopbackMirrorAnnounced{ false };
 
 bool LooksLikeUg2LanBeacon(const char* payload, int length);
 
@@ -547,6 +549,45 @@ void LogUg2LanBeaconDiag(const char* sourceTag, const char* payload, int length,
     std::cout << "NFSLAN: LAN-DIAG " << sourceTag << " bytes[0..63]: " << preview << '\n';
 }
 
+void MirrorUg2BeaconToLoopback(SOCKET socketHandle, const char* payload, int length, int flags)
+{
+    if (!gSameMachineModeEnabled.load() || !gOriginalSendTo || !payload || length <= 0)
+    {
+        return;
+    }
+
+    sockaddr_in loopbackAddr{};
+    loopbackAddr.sin_family = AF_INET;
+    loopbackAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
+    loopbackAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    const int mirrorResult = gOriginalSendTo(
+        socketHandle,
+        payload,
+        length,
+        flags,
+        reinterpret_cast<sockaddr*>(&loopbackAddr),
+        sizeof(loopbackAddr));
+    if (mirrorResult < 0)
+    {
+        if (gLanDiagEnabled.load())
+        {
+            std::cerr << "NFSLAN: LAN-DIAG loopback mirror failed (WSA error " << WSAGetLastError() << ").\n";
+        }
+        return;
+    }
+
+    if (!gLoopbackMirrorAnnounced.exchange(true))
+    {
+        std::cout << "NFSLAN: Same-machine UG2 beacon mirror active on 127.0.0.1:9999.\n";
+    }
+
+    if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 6))
+    {
+        LogUg2LanBeaconDiag("hook-mirror-loopback", payload, length, true);
+    }
+}
+
 bool LooksLikeUg2LanBeacon(const char* payload, int length)
 {
     if (!payload || length != 0x180)
@@ -621,7 +662,7 @@ int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const soc
 
     if (LooksLikeUg2LanBeacon(buf, len))
     {
-        if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 20))
+        if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 8))
         {
             LogUg2LanBeaconDiag("hook-send-original", buf, len, false);
         }
@@ -636,13 +677,21 @@ int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const soc
                 std::cout << "NFSLAN: Patched UG2 LAN beacon stats to advertise at least one slot.\n";
             }
 
-            if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 20))
+            if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 8))
             {
                 LogUg2LanBeaconDiag("hook-send-patched", patched.data(), static_cast<int>(patched.size()), true);
             }
 
+            MirrorUg2BeaconToLoopback(
+                s,
+                patched.data(),
+                static_cast<int>(patched.size()),
+                flags);
+
             return gOriginalSendTo(s, patched.data(), static_cast<int>(patched.size()), flags, to, tolen);
         }
+
+        MirrorUg2BeaconToLoopback(s, buf, len, flags);
     }
 
     return gOriginalSendTo(s, buf, len, flags, to, tolen);
@@ -1781,6 +1830,8 @@ int NFSLANWorkerMain(int argc, char* argv[])
     }
 
     bDisablePatching = options.disablePatching;
+    gSameMachineModeEnabled.store(options.sameMachineMode);
+    gLoopbackMirrorAnnounced.store(false);
     if (options.sameMachineMode)
     {
         std::cout << "NFSLAN: Same-machine mode enabled.\n";
@@ -1824,6 +1875,7 @@ int NFSLANWorkerMain(int argc, char* argv[])
 
     const bool underground2Server = bIsUnderground2Server((uintptr_t)serverdll);
     WorkerResolvedSettings resolved{};
+    bool sendToHookInstalled = false;
 
     if (!ApplyServerConfigCompatibility(options, underground2Server, &resolved))
     {
@@ -1835,7 +1887,7 @@ int NFSLANWorkerMain(int argc, char* argv[])
 
     if (underground2Server)
     {
-        const bool sendToHookInstalled = InstallSendToHook(serverdll);
+        sendToHookInstalled = InstallSendToHook(serverdll);
         if (!sendToHookInstalled)
         {
             std::cout << "NFSLAN: WARNING - UG2 sendto hook unavailable; using bridge-level beacon diagnostics only.\n";
@@ -1873,11 +1925,18 @@ int NFSLANWorkerMain(int argc, char* argv[])
         LogLanDiscoveryPortDiagnostic();
     }
 
-    StartLanDiscoveryLoopbackBridge(options.sameMachineMode);
+    const bool useLanBridge =
+        options.sameMachineMode && (!underground2Server || !sendToHookInstalled);
+    if (options.sameMachineMode && underground2Server && sendToHookInstalled)
+    {
+        std::cout << "NFSLAN: Same-machine UG2 discovery uses sendto loopback mirror (bridge disabled).\n";
+    }
+    StartLanDiscoveryLoopbackBridge(useLanBridge);
 
     std::cout << "NFSLAN: Server started. To stop gracefully, send CTRL+C to the console\n";
     while (IsServerRunning()) { Sleep(1); }
     StopLanDiscoveryLoopbackBridge();
+    gSameMachineModeEnabled.store(false);
     if (IsServerRunning())
     {
         std::cout << "NFSLAN: Stopping server...\n";
