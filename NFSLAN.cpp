@@ -7,10 +7,12 @@
 #include <algorithm>
 #include <string>
 #include <regex>
+#include <array>
 #include <fstream>
 #include <sstream>
 #include <optional>
 #include <cctype>
+#include <iomanip>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -49,6 +51,9 @@ struct WorkerLaunchOptions
     bool disablePatching = false;
     bool sameMachineMode = false;
 };
+
+constexpr uint16_t kGameReportIdent = 0x9A3E;
+constexpr uint16_t kGameReportVersion = 2;
 
 std::string TrimAscii(const std::string& input)
 {
@@ -197,6 +202,121 @@ bool IsTruthy(const std::string& value)
         || EqualsIgnoreCase(normalized, "on");
 }
 
+std::string EnsureConfigValue(std::string* configText, const std::string& key, const std::string& fallback, bool* changed)
+{
+    const std::string existing = TrimAscii(GetConfigValue(*configText, key).value_or(""));
+    if (!existing.empty())
+    {
+        return existing;
+    }
+
+    *configText = UpsertConfigValue(*configText, key, fallback);
+    *changed = true;
+    std::cout << "NFSLAN: Added " << key << "=" << fallback << '\n';
+    return fallback;
+}
+
+void EnsureMirroredKey(std::string* configText, const std::string& key, const std::string& value, bool* changed)
+{
+    const std::string existing = TrimAscii(GetConfigValue(*configText, key).value_or(""));
+    if (!existing.empty())
+    {
+        return;
+    }
+
+    *configText = UpsertConfigValue(*configText, key, value);
+    *changed = true;
+    std::cout << "NFSLAN: Added " << key << "=" << value << " (derived)\n";
+}
+
+bool TryReadGameReportFileHeader(const std::filesystem::path& path, uint16_t* identOut, uint16_t* versionOut)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        return false;
+    }
+
+    std::array<unsigned char, 4> header{};
+    file.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+    if (file.gcount() != static_cast<std::streamsize>(header.size()))
+    {
+        return false;
+    }
+
+    *identOut = static_cast<uint16_t>(header[0] | (static_cast<uint16_t>(header[1]) << 8));
+    *versionOut = static_cast<uint16_t>(header[2] | (static_cast<uint16_t>(header[3]) << 8));
+    return true;
+}
+
+std::string FormatGameReportHeader(uint16_t ident, uint16_t version)
+{
+    std::ostringstream stream;
+    stream << "ident=0x" << std::hex << std::uppercase << ident << std::dec << " version=" << version;
+    return stream.str();
+}
+
+bool IsCompatibleGameReportFile(const std::filesystem::path& path, std::string* detailsOut)
+{
+    uint16_t ident = 0;
+    uint16_t version = 0;
+    if (!TryReadGameReportFileHeader(path, &ident, &version))
+    {
+        if (detailsOut)
+        {
+            *detailsOut = "unable to read header";
+        }
+        return false;
+    }
+
+    if (detailsOut)
+    {
+        *detailsOut = FormatGameReportHeader(ident, version);
+    }
+
+    return ident == kGameReportIdent && version == kGameReportVersion;
+}
+
+std::optional<std::string> ResolveCompatibleGameReportFile(const std::string& configuredGamefile)
+{
+    std::vector<std::string> candidates;
+    if (!configuredGamefile.empty())
+    {
+        candidates.push_back(configuredGamefile);
+    }
+
+    for (const std::string& fallback : { std::string("gamefile.bin"), std::string("gameplay.bin") })
+    {
+        if (std::find(candidates.begin(), candidates.end(), fallback) == candidates.end())
+        {
+            candidates.push_back(fallback);
+        }
+    }
+
+    for (const std::string& candidate : candidates)
+    {
+        if (!std::filesystem::exists(std::filesystem::path(candidate)))
+        {
+            continue;
+        }
+
+        std::string details;
+        if (IsCompatibleGameReportFile(candidate, &details))
+        {
+            return candidate;
+        }
+
+        if (candidate == configuredGamefile)
+        {
+            std::cout << "NFSLAN: GAMEFILE '" << candidate << "' is incompatible (" << details
+                      << "), expected " << FormatGameReportHeader(kGameReportIdent, kGameReportVersion)
+                      << ".\n";
+        }
+    }
+
+    return std::nullopt;
+}
+
 bool ParseIpv4(const std::string& input, uint8_t* octets)
 {
     unsigned int a = 0;
@@ -309,13 +429,10 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool und
     }
 
     bool changed = false;
-    const auto currentFixups = GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS");
-    if (!currentFixups.has_value())
-    {
-        configText = UpsertConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS", "1");
-        changed = true;
-        std::cout << "NFSLAN: Added ENABLE_GAME_ADDR_FIXUPS=1 (recommended).\n";
-    }
+    std::cout << "NFSLAN: Detected server profile: " << (underground2Server ? "Underground 2" : "Most Wanted") << '\n';
+
+    const std::string portValue = EnsureConfigValue(&configText, "PORT", "9900", &changed);
+    const std::string addrValue = EnsureConfigValue(&configText, "ADDR", "0.0.0.0", &changed);
 
     if (options.sameMachineMode)
     {
@@ -325,8 +442,19 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool und
             changed = true;
             std::cout << "NFSLAN: Same-machine mode enabled -> FORCE_LOCAL=1\n";
         }
+    }
 
-        if (!IsTruthy(GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS").value_or("0")))
+    if (!underground2Server)
+    {
+        const auto currentFixups = GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS");
+        if (!currentFixups.has_value())
+        {
+            configText = UpsertConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS", "1");
+            changed = true;
+            std::cout << "NFSLAN: Added ENABLE_GAME_ADDR_FIXUPS=1 (recommended for MW).\n";
+        }
+
+        if (options.sameMachineMode && !IsTruthy(GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS").value_or("0")))
         {
             configText = UpsertConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS", "1");
             changed = true;
@@ -334,60 +462,93 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool und
         }
     }
 
-    const std::string expectedGamefile = underground2Server ? "gameplay.bin" : "gamefile.bin";
-    const auto configuredGamefile = GetConfigValue(configText, "GAMEFILE");
-
-    std::string gamefileValue = TrimAscii(configuredGamefile.value_or(expectedGamefile));
-    if (gamefileValue.empty())
+    if (underground2Server)
     {
-        gamefileValue = expectedGamefile;
-    }
-
-    if (!configuredGamefile.has_value())
-    {
-        configText = UpsertConfigValue(configText, "GAMEFILE", expectedGamefile);
-        changed = true;
-        std::cout << "NFSLAN: Added GAMEFILE=" << expectedGamefile << " for selected server profile.\n";
-    }
-
-    if (!std::filesystem::exists(std::filesystem::path(gamefileValue)))
-    {
-        if (!EqualsIgnoreCase(gamefileValue, expectedGamefile)
-            && std::filesystem::exists(std::filesystem::path(expectedGamefile)))
+        for (const std::string& key : { std::string("MPORT"), std::string("RPORT"), std::string("APORT") })
         {
-            std::cout << "NFSLAN: GAMEFILE '" << gamefileValue
-                      << "' not found; using " << expectedGamefile << " for selected profile.\n";
-            configText = UpsertConfigValue(configText, "GAMEFILE", expectedGamefile);
+            EnsureMirroredKey(&configText, key, portValue, &changed);
+        }
+        for (const std::string& key : { std::string("MADDR"), std::string("RADDR"), std::string("AADDR") })
+        {
+            EnsureMirroredKey(&configText, key, addrValue, &changed);
+        }
+    }
+    else
+    {
+        for (const std::string& key : { std::string("APORT"), std::string("CPORT") })
+        {
+            EnsureMirroredKey(&configText, key, portValue, &changed);
+        }
+        for (const std::string& key : { std::string("AADDR"), std::string("CADDR") })
+        {
+            EnsureMirroredKey(&configText, key, addrValue, &changed);
+        }
+    }
+
+    const auto cfg = [&](const std::string& key) -> std::string
+    {
+        return TrimAscii(GetConfigValue(configText, key).value_or(""));
+    };
+
+    std::cout << "NFSLAN: Effective ADDR/PORT: " << cfg("ADDR") << ":" << cfg("PORT") << '\n';
+    if (underground2Server)
+    {
+        std::cout << "NFSLAN: Effective UG2 endpoints: M=" << cfg("MADDR") << ":" << cfg("MPORT")
+                  << " R=" << cfg("RADDR") << ":" << cfg("RPORT")
+                  << " A=" << cfg("AADDR") << ":" << cfg("APORT") << '\n';
+    }
+    else
+    {
+        std::cout << "NFSLAN: Effective MW endpoints: A=" << cfg("AADDR") << ":" << cfg("APORT")
+                  << " C=" << cfg("CADDR") << ":" << cfg("CPORT") << '\n';
+    }
+
+    const auto configuredGamefileEntry = GetConfigValue(configText, "GAMEFILE");
+    std::string configuredGamefile = TrimAscii(configuredGamefileEntry.value_or("gamefile.bin"));
+    if (configuredGamefile.empty())
+    {
+        configuredGamefile = "gamefile.bin";
+    }
+
+    const auto compatibleGamefile = ResolveCompatibleGameReportFile(configuredGamefile);
+    if (compatibleGamefile.has_value())
+    {
+        if (!configuredGamefileEntry.has_value() || !EqualsIgnoreCase(configuredGamefile, *compatibleGamefile))
+        {
+            configText = UpsertConfigValue(configText, "GAMEFILE", *compatibleGamefile);
             changed = true;
-        }
-        else
-        {
-            std::cout << "NFSLAN: WARNING - GAMEFILE '" << gamefileValue
-                      << "' not found. Missing game report data may cause tier/points errors.\n";
+            std::cout << "NFSLAN: Using GAMEFILE=" << *compatibleGamefile << '\n';
         }
     }
-
-    const std::string addrValue = TrimAscii(GetConfigValue(configText, "ADDR").value_or(""));
-    if (!addrValue.empty())
+    else if (!std::filesystem::exists(std::filesystem::path(configuredGamefile)))
     {
-        if (addrValue == "0.0.0.0")
-        {
-            std::cout << "NFSLAN: NOTE - ADDR=0.0.0.0 is fine for local bind, but internet clients need a public endpoint.\n";
-        }
-        else if (!options.sameMachineMode && LooksPrivateOrNonRoutableIpv4(addrValue))
-        {
-            std::cout << "NFSLAN: NOTE - ADDR=" << addrValue
-                      << " is private/non-routable; remote internet players will not reach this directly.\n";
-        }
-        else if (!options.sameMachineMode && addrValue.find("%%bind(") != std::string::npos)
-        {
-            std::cout
-                << "NFSLAN: NOTE - ADDR uses %%bind(...), which usually resolves to a LAN IP. "
-                << "Use a public IP/DNS for internet hosting.\n";
-        }
+        std::cout << "NFSLAN: WARNING - GAMEFILE '" << configuredGamefile
+                  << "' not found. Missing game report data may cause tier/points/race-mode issues.\n";
+    }
+    else
+    {
+        std::string details;
+        IsCompatibleGameReportFile(configuredGamefile, &details);
+        std::cout << "NFSLAN: WARNING - GAMEFILE '" << configuredGamefile << "' is incompatible (" << details
+                  << "), expected " << FormatGameReportHeader(kGameReportIdent, kGameReportVersion) << ".\n";
     }
 
-    const std::string portValue = TrimAscii(GetConfigValue(configText, "PORT").value_or(""));
+    if (addrValue == "0.0.0.0")
+    {
+        std::cout << "NFSLAN: NOTE - ADDR=0.0.0.0 is fine for local bind, but internet clients need a public endpoint.\n";
+    }
+    else if (!options.sameMachineMode && LooksPrivateOrNonRoutableIpv4(addrValue))
+    {
+        std::cout << "NFSLAN: NOTE - ADDR=" << addrValue
+                  << " is private/non-routable; remote internet players will not reach this directly.\n";
+    }
+    else if (!options.sameMachineMode && addrValue.find("%%bind(") != std::string::npos)
+    {
+        std::cout
+            << "NFSLAN: NOTE - ADDR uses %%bind(...), which usually resolves to a LAN IP. "
+            << "Use a public IP/DNS for internet hosting.\n";
+    }
+
     if (options.sameMachineMode && portValue == "9900")
     {
         std::cout << "NFSLAN: NOTE - Same-machine mode with PORT=9900 can still conflict on some client patches. "
@@ -668,17 +829,67 @@ void PatchServerUG2(uintptr_t base)
     std::cout << "NFSLAN: Server patching for NFS Underground 2 not yet implemented.\n";
 }
 
+bool ModuleContainsAscii(uintptr_t base, const char* needle)
+{
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        return false;
+    }
+
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + static_cast<uintptr_t>(dos->e_lfanew));
+    if (!nt || nt->Signature != IMAGE_NT_SIGNATURE)
+    {
+        return false;
+    }
+
+    const size_t imageSize = static_cast<size_t>(nt->OptionalHeader.SizeOfImage);
+    const size_t needleLength = std::strlen(needle);
+    if (needleLength == 0 || needleLength > imageSize)
+    {
+        return false;
+    }
+
+    const auto* bytes = reinterpret_cast<const char*>(base);
+    for (size_t i = 0; i + needleLength <= imageSize; ++i)
+    {
+        if (std::memcmp(bytes + i, needle, needleLength) == 0)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool bIsUnderground2Server(uintptr_t base)
 {
+    if (ModuleContainsAscii(base, "RPORT")
+        && ModuleContainsAscii(base, "RADDR")
+        && ModuleContainsAscii(base, "TRUST_MATCH"))
+    {
+        return true;
+    }
+
     // base is usually 10000000 but it's better safe than sorry
     hook::details::set_process_base(base);
 
     // 100013FB in MW, 100013EC in UG2
-    uintptr_t defServerNamePtr = reinterpret_cast<uintptr_t>(hook::pattern("6A 03 68 66 76 64 61 53").get_first(0)) + 0x12;
-    char* defServerName = *(char**)defServerNamePtr;
-    if ((strstr(defServerName, "Underground 2") == nullptr) && (defServerName != nullptr))
-        return false;
-    return true;
+    try
+    {
+        uintptr_t defServerNamePtr = reinterpret_cast<uintptr_t>(hook::pattern("6A 03 68 66 76 64 61 53").get_first(0)) + 0x12;
+        char* defServerName = *(char**)defServerNamePtr;
+        if ((defServerName != nullptr) && (std::strstr(defServerName, "Underground 2") != nullptr))
+        {
+            return true;
+        }
+    }
+    catch (...)
+    {
+        // ignore and fall back to default false
+    }
+
+    return false;
 }
 
 void SigInterruptHandler(int signum)

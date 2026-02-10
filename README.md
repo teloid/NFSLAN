@@ -15,6 +15,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 - Windows single-executable mode: GUI + worker runtime embedded in the same EXE (Win32/x86 build)
 - Optional separate `NFSLAN` worker build on Windows in external-worker mode
 - Existing injector/hooking code used by the worker for Most Wanted patching
+- Worker-side MW/UG2 config normalization and game-report file header validation (`gamefile.bin` / `gameplay.bin`)
 
 ## Important platform reality
 

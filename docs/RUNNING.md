@@ -6,6 +6,7 @@ In your chosen server directory, place:
 
 - `server.dll`
 - `server.cfg`
+- a valid game report file (`gamefile.bin` and/or `gameplay.bin`) with expected header
 
 Use the correct `server.dll` for the selected game profile.
 Do not run server directly from your game installation folder; use a separate server folder copy.
@@ -31,6 +32,10 @@ Do not run server directly from your game installation folder; use a separate se
 - Native x64 GUI mode: GUI launches external `NFSLAN.exe` worker.
 - Qt launcher mode: same as above depending on your build options.
 - Console worker also supports `--same-machine` (`--local-host` alias) to force same-PC compatibility values in `server.cfg`.
+- Worker applies profile-specific config normalization:
+  - MW: keeps `ENABLE_GAME_ADDR_FIXUPS` enabled and mirrors `ADDR/PORT` to MW auxiliary keys.
+  - UG2: mirrors `ADDR/PORT` to UG2 keys (`MADDR/RADDR/AADDR`, `MPORT/RPORT/APORT`) when missing.
+- Worker validates game report file header (`ident=0x9A3E`, `version=2`) and auto-selects compatible file from `GAMEFILE`, `gamefile.bin`, `gameplay.bin`.
 
 ## Internet notes
 

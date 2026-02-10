@@ -23,6 +23,7 @@ Runtime note:
    - `PORT=<public port>` (commonly `9900`)
    - `ADDR=<public server IP or DNS name>`
    - `ENABLE_GAME_ADDR_FIXUPS=1` (recommended)
+   - `GAMEFILE=<valid game report file>` (must match header expected by server.dll)
 4. Open/forward your server UDP port in firewall/router (at least the `PORT` value).
 5. Start the matching GUI profile:
    - `Need for Speed Most Wanted (2005)` with MW `server.dll`
@@ -51,6 +52,7 @@ If the server host also runs the game client on the same PC:
 
 - UG2 patching is not implemented in current worker code (`PatchServerUG2` is still a stub).
 - LAN hosting can still start, but internet behavior may require additional external patches/tools.
+- Wrapper now normalizes UG2 network keys (`MADDR/RADDR/AADDR`, `MPORT/RPORT/APORT`) from `ADDR/PORT` when those keys are missing.
 
 ## Client requirements for internet play (known from current reverse engineering)
 
