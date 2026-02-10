@@ -1,16 +1,19 @@
 cmake_minimum_required(VERSION 3.21)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 
-qt_standard_project_setup()
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTORCC ON)
 
-qt_add_executable(nfslan-gui
+add_executable(nfslan-gui
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
 )
 
-target_link_libraries(nfslan-gui PRIVATE Qt6::Widgets)
+target_link_libraries(nfslan-gui PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
 
 if(WIN32 AND NFSLAN_BUILD_WORKER AND NFSLAN_EMBED_WORKER_IN_GUI)
     target_sources(nfslan-gui PRIVATE
@@ -40,3 +43,7 @@ endif()
 set_target_properties(nfslan-gui PROPERTIES
     OUTPUT_NAME "NFSLAN-GUI"
 )
+
+if(QT_VERSION_MAJOR EQUAL 6)
+    qt_finalize_executable(nfslan-gui)
+endif()

@@ -18,7 +18,7 @@ This project structure was expanded with AI-assisted implementation and document
 
 ## Cross-platform model
 
-- Windows default: `NFSLAN-GUI.exe` -> internal `--worker` mode -> `server.dll`
+- Windows single-EXE (Win32/x86): `NFSLAN-GUI.exe` -> internal `--worker` mode -> `server.dll`
 - Windows legacy: `NFSLAN-GUI` -> `NFSLAN.exe` -> `server.dll`
 - Linux: `NFSLAN-GUI` -> `wine NFSLAN.exe` -> `server.dll`
 - macOS: `NFSLAN-GUI` -> `wine/CrossOver wrapper` -> `NFSLAN.exe` -> `server.dll`
@@ -29,6 +29,7 @@ This split isolates Windows-only binary logic into the worker and keeps GUI code
 
 `server.dll` and the patching flow are based on Win32 APIs and x86 binary signatures.
 A native Linux loader would require a complete reimplementation or an equivalent Linux server binary, which is not available in this repository.
+Likewise, embedded worker mode on Windows requires x86 process architecture.
 
 ## Future extension points
 

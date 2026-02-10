@@ -17,7 +17,7 @@ Use the correct `server.dll` for the selected game profile.
    - Underground 2: use UG2 `server.dll`
 3. Set `Server name`.
 4. Set `Server directory` where `server.dll` and `server.cfg` exist.
-5. On Windows single-EXE mode, worker path is embedded automatically.
+5. On Windows single-EXE mode (Win32 build), worker path is embedded automatically.
 6. If using native GUI on non-Windows hosts, set `Worker executable` path.
 7. On non-Windows hosts, set `Runtime command`:
    - `wine` (default)

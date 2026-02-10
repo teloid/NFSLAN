@@ -6,7 +6,9 @@
 
 - Visual Studio 2022 (MSVC)
 - CMake 3.21+
-- Qt 6.5+ (Widgets)
+- Qt kit matching your target architecture:
+  - Single EXE mode: 32-bit Qt kit (for Win32 build, typically Qt 5.x MSVC x86)
+  - Split mode x64 GUI: Qt 6.x MSVC 64-bit kit
 
 ### Linux
 
@@ -24,19 +26,46 @@
 
 ## Build on Windows
 
+### Single executable mode (GUI + embedded worker, x86)
+
+Use Win32 target because worker + `server.dll` are x86-only.
+
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022"
-cmake --build build --config Release
+cmake -S . -B build-win32 -G "Visual Studio 17 2022" -A Win32 `
+  -DNFSLAN_BUILD_WORKER=ON -DNFSLAN_EMBED_WORKER_IN_GUI=ON `
+  -DCMAKE_PREFIX_PATH="C:\Qt\5.15.2\msvc2019"
+cmake --build build-win32 --config Release
 ```
 
-Expected output by default (`NFSLAN_EMBED_WORKER_IN_GUI=ON`):
+Expected output:
 
-- Single executable: `build/gui/Release/NFSLAN-GUI.exe` (GUI + embedded worker)
+- `build-win32/gui/Release/NFSLAN-GUI.exe`
 
-Optional legacy output (`NFSLAN_EMBED_WORKER_IN_GUI=OFF`):
+### Split mode (x64 GUI + separate worker)
 
-- GUI: `build/gui/Release/NFSLAN-GUI.exe`
-- Worker: `build/Release/NFSLAN.exe` (separate worker)
+```powershell
+cmake -S . -B build-x64 -G "Visual Studio 17 2022" -A x64 `
+  -DNFSLAN_BUILD_WORKER=OFF `
+  -DCMAKE_PREFIX_PATH="C:\Qt\6.8.3\msvc2022_64"
+cmake --build build-x64 --config Release
+```
+
+For worker in split mode, build an x86 worker separately:
+
+```powershell
+cmake -S . -B build-worker-x86 -G "Visual Studio 17 2022" -A Win32 `
+  -DNFSLAN_BUILD_GUI=OFF -DNFSLAN_BUILD_WORKER=ON -DNFSLAN_EMBED_WORKER_IN_GUI=OFF
+cmake --build build-worker-x86 --config Release
+```
+
+Expected outputs:
+
+- GUI: `build-x64/gui/Release/NFSLAN-GUI.exe`
+- Worker: `build-worker-x86/Release/NFSLAN.exe`
+
+### Notes
+
+- If single-EXE mode is enabled on x64, configure will fail intentionally with an x86 requirement message.
 
 ## Build on Linux
 

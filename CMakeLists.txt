@@ -15,6 +15,12 @@ if(NFSLAN_EMBED_WORKER_IN_GUI AND NOT NFSLAN_BUILD_GUI)
     set(NFSLAN_EMBED_WORKER_IN_GUI OFF)
 endif()
 
+if(WIN32 AND NFSLAN_BUILD_WORKER AND NFSLAN_EMBED_WORKER_IN_GUI AND NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+    message(FATAL_ERROR
+        "Embedded worker mode requires a 32-bit (Win32) build because NFSLAN worker and server.dll are x86-only. "
+        "Configure with '-A Win32' and use a 32-bit Qt kit.")
+endif()
+
 if(NFSLAN_BUILD_GUI)
     add_subdirectory(gui)
 endif()

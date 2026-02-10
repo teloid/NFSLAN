@@ -9,6 +9,7 @@ For internet play, each client still needs a compatible client patch/mod setup f
 Runtime note:
 
 - Windows default build is single-EXE (GUI + embedded worker).
+- Embedded worker mode is x86/Win32 only.
 - Native Linux/macOS GUI mode still needs a Windows worker executable for the runtime command path.
 
 ## Server-side checklist (both games)
