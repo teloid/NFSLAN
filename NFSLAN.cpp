@@ -340,111 +340,146 @@ std::array<char, 0x180> BuildLanDiscoveryQueryPacket()
 
 void RunLanDiscoveryLoopbackBridge()
 {
-    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET)
+    try
     {
-        std::cerr << "NFSLAN: WARNING - LAN bridge socket creation failed.\n";
-        return;
-    }
+        WSASession wsaSession;
 
-    DWORD recvTimeoutMs = 250;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&recvTimeoutMs), sizeof(recvTimeoutMs));
-    int allowBroadcast = 1;
-    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&allowBroadcast), sizeof(allowBroadcast));
-
-    sockaddr_in serverAddr{};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
-    serverAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
-    sockaddr_in localClientAddr{};
-    localClientAddr.sin_family = AF_INET;
-    localClientAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
-    localClientAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
-    const auto queryPacket = BuildLanDiscoveryQueryPacket();
-    bool loggedFirstResponse = false;
-    int silentCycles = 0;
-
-    while (gLanBridgeRunning.load())
-    {
-        const int sent = sendto(
-            sock,
-            queryPacket.data(),
-            static_cast<int>(queryPacket.size()),
-            0,
-            reinterpret_cast<sockaddr*>(&serverAddr),
-            sizeof(serverAddr));
-
-        if (sent < 0)
+        SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock == INVALID_SOCKET)
         {
-            ++silentCycles;
+            const int err = WSAGetLastError();
+            std::cerr << "NFSLAN: WARNING - LAN bridge socket creation failed (WSA error " << err << ").\n";
+            return;
+        }
+
+        DWORD recvTimeoutMs = 250;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&recvTimeoutMs), sizeof(recvTimeoutMs));
+        int allowBroadcast = 1;
+        setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&allowBroadcast), sizeof(allowBroadcast));
+
+        sockaddr_in serverAddr{};
+        serverAddr.sin_family = AF_INET;
+        serverAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
+        serverAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+        sockaddr_in localClientAddr{};
+        localClientAddr.sin_family = AF_INET;
+        localClientAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
+        localClientAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+        sockaddr_in broadcastClientAddr{};
+        broadcastClientAddr.sin_family = AF_INET;
+        broadcastClientAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
+        broadcastClientAddr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+
+        const auto queryPacket = BuildLanDiscoveryQueryPacket();
+        bool loggedFirstResponse = false;
+        bool loggedSendError = false;
+        bool loggedBroadcastError = false;
+        int silentCycles = 0;
+
+        while (gLanBridgeRunning.load())
+        {
+            const int sent = sendto(
+                sock,
+                queryPacket.data(),
+                static_cast<int>(queryPacket.size()),
+                0,
+                reinterpret_cast<sockaddr*>(&serverAddr),
+                sizeof(serverAddr));
+
+            if (sent < 0)
+            {
+                if (!loggedSendError)
+                {
+                    loggedSendError = true;
+                    std::cerr << "NFSLAN: WARNING - LAN bridge send failed (WSA error " << WSAGetLastError() << ").\n";
+                }
+                ++silentCycles;
+                Sleep(1000);
+                continue;
+            }
+
+            loggedSendError = false;
+            bool forwardedAny = false;
+            for (int i = 0; i < 8; ++i)
+            {
+                std::array<char, 0x180> response{};
+                sockaddr_in from{};
+                int fromLen = sizeof(from);
+                const int received = recvfrom(
+                    sock,
+                    response.data(),
+                    static_cast<int>(response.size()),
+                    0,
+                    reinterpret_cast<sockaddr*>(&from),
+                    &fromLen);
+
+                if (received <= 0)
+                {
+                    break;
+                }
+
+                if (!IsLanDiscoveryPacket(response.data(), received))
+                {
+                    continue;
+                }
+
+                if (response[8] == '?')
+                {
+                    continue;
+                }
+
+                forwardedAny = true;
+                sendto(
+                    sock,
+                    response.data(),
+                    received,
+                    0,
+                    reinterpret_cast<sockaddr*>(&localClientAddr),
+                    sizeof(localClientAddr));
+                const int rebroadcast = sendto(
+                    sock,
+                    response.data(),
+                    received,
+                    0,
+                    reinterpret_cast<sockaddr*>(&broadcastClientAddr),
+                    sizeof(broadcastClientAddr));
+                if (rebroadcast < 0 && !loggedBroadcastError)
+                {
+                    loggedBroadcastError = true;
+                    std::cerr << "NFSLAN: WARNING - LAN bridge rebroadcast failed (WSA error " << WSAGetLastError() << ").\n";
+                }
+
+                if (!loggedFirstResponse)
+                {
+                    loggedFirstResponse = true;
+                    std::cout << "NFSLAN: Same-machine LAN bridge active on UDP " << kLanDiscoveryPort << ".\n";
+                }
+            }
+
+            if (forwardedAny)
+            {
+                silentCycles = 0;
+            }
+            else
+            {
+                ++silentCycles;
+                if (silentCycles == 5)
+                {
+                    std::cout << "NFSLAN: WARNING - no LAN discovery replies seen on loopback yet.\n";
+                }
+            }
+
             Sleep(1000);
-            continue;
         }
 
-        bool forwardedAny = false;
-        for (int i = 0; i < 8; ++i)
-        {
-            std::array<char, 0x180> response{};
-            sockaddr_in from{};
-            int fromLen = sizeof(from);
-            const int received = recvfrom(
-                sock,
-                response.data(),
-                static_cast<int>(response.size()),
-                0,
-                reinterpret_cast<sockaddr*>(&from),
-                &fromLen);
-
-            if (received <= 0)
-            {
-                break;
-            }
-
-            if (!IsLanDiscoveryPacket(response.data(), received))
-            {
-                continue;
-            }
-
-            if (response[8] == '?')
-            {
-                continue;
-            }
-
-            forwardedAny = true;
-            sendto(
-                sock,
-                response.data(),
-                received,
-                0,
-                reinterpret_cast<sockaddr*>(&localClientAddr),
-                sizeof(localClientAddr));
-
-            if (!loggedFirstResponse)
-            {
-                loggedFirstResponse = true;
-                std::cout << "NFSLAN: Same-machine LAN bridge active on UDP " << kLanDiscoveryPort << ".\n";
-            }
-        }
-
-        if (forwardedAny)
-        {
-            silentCycles = 0;
-        }
-        else
-        {
-            ++silentCycles;
-            if (silentCycles == 5)
-            {
-                std::cout << "NFSLAN: WARNING - no LAN discovery replies seen on loopback yet.\n";
-            }
-        }
-
-        Sleep(1000);
+        closesocket(sock);
     }
-
-    closesocket(sock);
+    catch (const std::exception& ex)
+    {
+        std::cerr << "NFSLAN: WARNING - LAN bridge failed: " << ex.what() << '\n';
+    }
 }
 
 void StartLanDiscoveryLoopbackBridge(bool enabled)
