@@ -58,6 +58,7 @@ struct WorkerLaunchOptions
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kLanDiscoveryPort = 9999;
+constexpr const char* kBuildTag = "2026-02-10-ug2diag-2";
 
 std::atomic<bool> gLanBridgeRunning{ false };
 std::thread gLanBridgeThread;
@@ -239,6 +240,40 @@ void EnsureMirroredKey(std::string* configText, const std::string& key, const st
     *configText = UpsertConfigValue(*configText, key, value);
     *changed = true;
     std::cout << "NFSLAN: Added " << key << "=" << value << " (derived)\n";
+}
+
+void ForceConfigValue(std::string* configText, const std::string& key, const std::string& value, bool* changed)
+{
+    const std::string existing = TrimAscii(GetConfigValue(*configText, key).value_or(""));
+    if (EqualsIgnoreCase(existing, value))
+    {
+        return;
+    }
+
+    *configText = UpsertConfigValue(*configText, key, value);
+    *changed = true;
+    if (existing.empty())
+    {
+        std::cout << "NFSLAN: Added " << key << "=" << value << '\n';
+    }
+    else
+    {
+        std::cout << "NFSLAN: Updated " << key << "=" << value << " (was " << existing << ")\n";
+    }
+}
+
+void MigrateLegacyConfigValue(
+    std::string* configText,
+    const std::string& key,
+    const std::string& legacyValue,
+    const std::string& newValue,
+    bool* changed)
+{
+    const std::string existing = TrimAscii(GetConfigValue(*configText, key).value_or(""));
+    if (existing.empty() || EqualsIgnoreCase(existing, legacyValue))
+    {
+        ForceConfigValue(configText, key, newValue, changed);
+    }
 }
 
 bool TryReadGameReportFileHeader(const std::filesystem::path& path, uint16_t* identOut, uint16_t* versionOut)
@@ -449,6 +484,34 @@ bool InstallSendToHook(HMODULE moduleHandle)
         return false;
     }
 
+    const auto patchThunk = [&](IMAGE_THUNK_DATA* thunk, const char* sourceTag) -> bool
+    {
+        if (thunk->u1.Function == reinterpret_cast<ULONG_PTR>(&HookedSendTo))
+        {
+            gSendToHookInstalled.store(true);
+            std::cout << "NFSLAN: UG2 sendto hook already installed (" << sourceTag << ").\n";
+            return true;
+        }
+
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), PAGE_READWRITE, &oldProtect))
+        {
+            std::cerr << "NFSLAN: WARNING - cannot install sendto hook: VirtualProtect failed.\n";
+            return false;
+        }
+
+        gOriginalSendTo = reinterpret_cast<SendToFn>(thunk->u1.Function);
+        thunk->u1.Function = reinterpret_cast<ULONG_PTR>(&HookedSendTo);
+
+        DWORD restoreProtect = 0;
+        VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), oldProtect, &restoreProtect);
+        FlushInstructionCache(GetCurrentProcess(), &thunk->u1.Function, sizeof(thunk->u1.Function));
+
+        gSendToHookInstalled.store(true);
+        std::cout << "NFSLAN: Installed UG2 sendto beacon compatibility hook (" << sourceTag << ").\n";
+        return true;
+    };
+
     auto* descriptor = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + importDir.VirtualAddress);
     for (; descriptor->Name != 0; ++descriptor)
     {
@@ -477,28 +540,48 @@ bool InstallSendToHook(HMODULE moduleHandle)
             {
                 continue;
             }
-
-            DWORD oldProtect = 0;
-            if (!VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), PAGE_READWRITE, &oldProtect))
-            {
-                std::cerr << "NFSLAN: WARNING - cannot install sendto hook: VirtualProtect failed.\n";
-                return false;
-            }
-
-            gOriginalSendTo = reinterpret_cast<SendToFn>(thunk->u1.Function);
-            thunk->u1.Function = reinterpret_cast<ULONG_PTR>(&HookedSendTo);
-
-            DWORD restoreProtect = 0;
-            VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), oldProtect, &restoreProtect);
-            FlushInstructionCache(GetCurrentProcess(), &thunk->u1.Function, sizeof(thunk->u1.Function));
-
-            gSendToHookInstalled.store(true);
-            std::cout << "NFSLAN: Installed UG2 sendto beacon compatibility hook.\n";
-            return true;
+            return patchThunk(thunk, "named import");
         }
     }
 
-    std::cerr << "NFSLAN: WARNING - could not find ws2_32!sendto import to hook.\n";
+    FARPROC ws2SendTo = nullptr;
+    if (HMODULE ws2 = GetModuleHandleA("ws2_32.dll"))
+    {
+        ws2SendTo = GetProcAddress(ws2, "sendto");
+    }
+    else if (HMODULE ws2Loaded = LoadLibraryA("ws2_32.dll"))
+    {
+        ws2SendTo = GetProcAddress(ws2Loaded, "sendto");
+    }
+
+    FARPROC wsockSendTo = nullptr;
+    if (HMODULE wsock = GetModuleHandleA("wsock32.dll"))
+    {
+        wsockSendTo = GetProcAddress(wsock, "sendto");
+    }
+
+    if (!ws2SendTo && !wsockSendTo)
+    {
+        std::cerr << "NFSLAN: WARNING - could not resolve sendto in ws2_32/wsock32.\n";
+        return false;
+    }
+
+    descriptor = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + importDir.VirtualAddress);
+    for (; descriptor->Name != 0; ++descriptor)
+    {
+        auto* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->FirstThunk);
+        for (; thunk->u1.Function != 0; ++thunk)
+        {
+            const ULONG_PTR fn = thunk->u1.Function;
+            if ((ws2SendTo && fn == reinterpret_cast<ULONG_PTR>(ws2SendTo))
+                || (wsockSendTo && fn == reinterpret_cast<ULONG_PTR>(wsockSendTo)))
+            {
+                return patchThunk(thunk, "pointer match import");
+            }
+        }
+    }
+
+    std::cerr << "NFSLAN: WARNING - could not find sendto import thunk to hook.\n";
     return false;
 }
 
@@ -853,8 +936,20 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool und
     std::cout << "NFSLAN: Detected server profile: " << (underground2Server ? "Underground 2" : "Most Wanted") << '\n';
 
     const std::string lobbyIdentDefault = underground2Server ? "NFSU2NA" : "NFSMWNA";
-    EnsureConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
-    EnsureConfigValue(&configText, "LOBBY", lobbyIdentDefault, &changed);
+    if (underground2Server)
+    {
+        MigrateLegacyConfigValue(&configText, "LOBBY_IDENT", "NFSU", lobbyIdentDefault, &changed);
+        MigrateLegacyConfigValue(&configText, "LOBBY", "NFSU", lobbyIdentDefault, &changed);
+        EnsureConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
+        EnsureConfigValue(&configText, "LOBBY", lobbyIdentDefault, &changed);
+    }
+    else
+    {
+        MigrateLegacyConfigValue(&configText, "LOBBY_IDENT", "NFSMW", lobbyIdentDefault, &changed);
+        MigrateLegacyConfigValue(&configText, "LOBBY", "NFSMW", lobbyIdentDefault, &changed);
+        EnsureConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
+        EnsureConfigValue(&configText, "LOBBY", lobbyIdentDefault, &changed);
+    }
 
     const std::string portValue = EnsureConfigValue(&configText, "PORT", "9900", &changed);
     std::string addrValue = EnsureConfigValue(&configText, "ADDR", "0.0.0.0", &changed);
@@ -874,6 +969,17 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool und
             configText = UpsertConfigValue(configText, "FORCE_LOCAL", "1");
             changed = true;
             std::cout << "NFSLAN: Same-machine mode enabled -> FORCE_LOCAL=1\n";
+        }
+
+        if (underground2Server)
+        {
+            ForceConfigValue(&configText, "MADDR", "127.0.0.1", &changed);
+            ForceConfigValue(&configText, "RADDR", "127.0.0.1", &changed);
+            ForceConfigValue(&configText, "AADDR", "127.0.0.1", &changed);
+            ForceConfigValue(&configText, "MPORT", portValue, &changed);
+            ForceConfigValue(&configText, "RPORT", portValue, &changed);
+            ForceConfigValue(&configText, "APORT", portValue, &changed);
+            std::cout << "NFSLAN: Same-machine mode enabled -> UG2 endpoints forced to loopback.\n";
         }
     }
 
@@ -1345,6 +1451,7 @@ void SigInterruptHandler(int signum)
 int NFSLANWorkerMain(int argc, char* argv[])
 {
     std::cout << "NFS LAN Server Launcher\n";
+    std::cout << "NFSLAN: Build tag " << kBuildTag << '\n';
 
     WorkerLaunchOptions options;
     if (!ParseWorkerLaunchOptions(argc, argv, &options))
