@@ -15,7 +15,7 @@ add_executable(nfslan-gui
 
 target_link_libraries(nfslan-gui PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
 
-if(WIN32 AND NFSLAN_BUILD_WORKER AND NFSLAN_EMBED_WORKER_IN_GUI)
+if(WIN32 AND NFSLAN_BUILD_WORKER AND NFSLAN_EMBED_WORKER_IN_GUI AND CMAKE_SIZEOF_VOID_P EQUAL 4)
     target_sources(nfslan-gui PRIVATE
         ${CMAKE_SOURCE_DIR}/NFSLAN.cpp
         ${CMAKE_SOURCE_DIR}/injector/hooking/Hooking.Patterns.cpp
@@ -28,8 +28,6 @@ if(WIN32 AND NFSLAN_BUILD_WORKER AND NFSLAN_EMBED_WORKER_IN_GUI)
     )
 
     target_compile_definitions(nfslan-gui PRIVATE
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
         NFSLAN_WORKER_NO_MAIN
         NFSLAN_WINDOWS_EMBED_WORKER
     )

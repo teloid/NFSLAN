@@ -8,8 +8,9 @@ For internet play, each client still needs a compatible client patch/mod setup f
 
 Runtime note:
 
-- Windows default build is single-EXE (GUI + embedded worker).
-- Embedded worker mode is x86/Win32 only.
+- Windows native GUI is available without Qt runtime.
+- Embedded single-EXE mode is x86/Win32 only.
+- Native x64 GUI mode uses external `NFSLAN.exe` worker.
 - Native Linux/macOS GUI mode still needs a Windows worker executable for the runtime command path.
 
 ## Server-side checklist (both games)
@@ -25,6 +26,9 @@ Runtime note:
 5. Start the matching GUI profile:
    - `Need for Speed Most Wanted (2005)` with MW `server.dll`
    - `Need for Speed Underground 2` with UG2 `server.dll`
+6. Confirm logs do not advertise private-only slave address for internet clients.
+   - Example bad for internet clients: `addr=192.168.x.x:9900`
+   - Fix: set `ADDR` to public IP or DNS in `server.cfg`
 
 ## Game-specific notes
 

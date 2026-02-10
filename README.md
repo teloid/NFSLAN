@@ -9,16 +9,19 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 
 ## What is included
 
-- `NFSLAN-GUI`: desktop GUI launcher (Qt, Windows/Linux/macOS)
-- Windows single-executable mode: GUI + worker runtime embedded in the same EXE (x86/Win32 build)
-- Optional separate `NFSLAN` worker build on Windows (legacy mode)
+- Native Win32 launcher (`NFSLAN-GUI`) with integrated `server.cfg` editor (no Qt runtime dependency)
+- Qt launcher (`NFSLAN-GUI`/`NFSLAN-NativeGUI` depending on build options) for cross-platform workflows
+- Windows single-executable mode: GUI + worker runtime embedded in the same EXE (Win32/x86 build)
+- Optional separate `NFSLAN` worker build on Windows in external-worker mode
 - Existing injector/hooking code used by the worker for Most Wanted patching
 
 ## Important platform reality
 
 `server.dll` from Need for Speed Most Wanted (2005) and Underground 2 is a Windows PE library.
 
-- Windows: single-EXE mode requires 32-bit (Win32) build because worker + `server.dll` are x86-only
+- Windows:
+  - Native Win32 GUI can run in external-worker mode (x64 GUI + x86 worker)
+  - Single-EXE mode requires 32-bit (Win32/x86) build because worker + `server.dll` are x86-only
 - Linux/macOS: run the same Windows worker through a runtime command (`wine`, or a Proton/wrapper command)
 
 Native Linux loading of this `server.dll` is not available in this project because the game server binary itself is Windows-only.
@@ -26,11 +29,11 @@ Native Linux loading of this `server.dll` is not available in this project becau
 ## Quick start
 
 1. Build on Windows:
-   - single EXE mode with Win32 + 32-bit Qt kit, or
-   - split mode (GUI and worker separated) for x64 GUI workflows.
+   - native Win32 GUI in x64 (external worker mode), or
+   - native single EXE in Win32/x86 (embedded worker mode).
 2. Place game `server.dll` and `server.cfg` in a server folder.
 3. Open `NFSLAN-GUI`, choose game profile, set server name/path, and start.
-4. On Linux/macOS, install a Windows compatibility runtime and run the Windows build via Proton/Wine, or keep using native GUI + separate worker setup.
+4. On Linux/macOS, install a Windows compatibility runtime and run the Windows build via Proton/Wine, or use the Qt launcher path.
 
 ## Documentation
 

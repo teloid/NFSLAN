@@ -6,26 +6,40 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(NFSLAN_BUILD_GUI "Build the Qt GUI launcher" ON)
+if(WIN32)
+    set(NFSLAN_BUILD_GUI_DEFAULT OFF)
+    set(NFSLAN_BUILD_NATIVE_WIN32_GUI_DEFAULT ON)
+else()
+    set(NFSLAN_BUILD_GUI_DEFAULT ON)
+    set(NFSLAN_BUILD_NATIVE_WIN32_GUI_DEFAULT OFF)
+endif()
+
+option(NFSLAN_BUILD_GUI "Build the Qt GUI launcher" ${NFSLAN_BUILD_GUI_DEFAULT})
+option(NFSLAN_BUILD_NATIVE_WIN32_GUI "Build native Win32 GUI launcher (no Qt runtime)" ${NFSLAN_BUILD_NATIVE_WIN32_GUI_DEFAULT})
 option(NFSLAN_BUILD_WORKER "Build the native Windows worker executable" ON)
 option(NFSLAN_EMBED_WORKER_IN_GUI "Embed the Windows worker into the GUI executable (single EXE mode)" ON)
 
-if(NFSLAN_EMBED_WORKER_IN_GUI AND NOT NFSLAN_BUILD_GUI)
-    message(WARNING "NFSLAN_EMBED_WORKER_IN_GUI requires NFSLAN_BUILD_GUI=ON. Disabling embedding.")
+if(WIN32 AND NFSLAN_EMBED_WORKER_IN_GUI AND NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+    message(WARNING
+        "NFSLAN_EMBED_WORKER_IN_GUI requires a Win32/x86 build. "
+        "Disabling embedding for this configure run.")
     set(NFSLAN_EMBED_WORKER_IN_GUI OFF)
 endif()
 
-if(WIN32 AND NFSLAN_BUILD_WORKER AND NFSLAN_EMBED_WORKER_IN_GUI AND NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
-    message(FATAL_ERROR
-        "Embedded worker mode requires a 32-bit (Win32) build because NFSLAN worker and server.dll are x86-only. "
-        "Configure with '-A Win32' and use a 32-bit Qt kit.")
+if(NFSLAN_BUILD_NATIVE_WIN32_GUI AND NOT WIN32)
+    message(WARNING "NFSLAN_BUILD_NATIVE_WIN32_GUI is Windows-only. Disabling it.")
+    set(NFSLAN_BUILD_NATIVE_WIN32_GUI OFF)
 endif()
 
 if(NFSLAN_BUILD_GUI)
     add_subdirectory(gui)
 endif()
 
-if(NFSLAN_BUILD_WORKER AND WIN32 AND NOT NFSLAN_EMBED_WORKER_IN_GUI)
+if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
+    add_subdirectory(native_win32)
+endif()
+
+if(NFSLAN_BUILD_WORKER AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4 AND NOT NFSLAN_EMBED_WORKER_IN_GUI)
     add_executable(nfslan-worker
         NFSLAN.cpp
         injector/hooking/Hooking.Patterns.cpp
@@ -51,7 +65,11 @@ if(NFSLAN_BUILD_WORKER AND WIN32 AND NOT NFSLAN_EMBED_WORKER_IN_GUI)
 endif()
 
 if(NFSLAN_BUILD_WORKER AND WIN32 AND NFSLAN_EMBED_WORKER_IN_GUI)
-    message(STATUS "Worker runtime will be embedded into the GUI executable on Windows (single EXE mode)")
+    message(STATUS "Worker embedding is enabled (x86-only); compatible GUI targets may embed the runtime")
+endif()
+
+if(NFSLAN_BUILD_WORKER AND WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+    message(STATUS "Skipping standalone nfslan-worker in x64 build: worker is x86-only. Use '-A Win32' for NFSLAN.exe.")
 endif()
 
 if(NFSLAN_BUILD_WORKER AND NOT WIN32)

@@ -11,36 +11,33 @@ Use the correct `server.dll` for the selected game profile.
 
 ## Start from GUI
 
-1. Open `NFSLAN-GUI`.
+1. Open launcher (`NFSLAN-GUI`).
 2. Select profile:
    - Most Wanted (2005): use MW `server.dll`
    - Underground 2: use UG2 `server.dll`
 3. Set `Server name`.
 4. Set `Server directory` where `server.dll` and `server.cfg` exist.
-5. On Windows single-EXE mode (Win32 build), worker path is embedded automatically.
-6. If using native GUI on non-Windows hosts, set `Worker executable` path.
-7. On non-Windows hosts, set `Runtime command`:
-   - `wine` (default)
-   - `proton run` (if `proton` is in PATH)
-   - Absolute path to wrapper script if Proton is not directly executable
-8. Click `Start Server`.
+5. Configure `PORT` and `ADDR` fields.
+6. Edit advanced keys in `server.cfg` editor and save.
+7. Start server.
 
-The log panel displays worker output and start/stop status.
+## Worker mode behavior
 
-## Worker arguments
+- Native single-EXE (Win32/x86 embed): GUI launches itself with `--worker` internally.
+- Native x64 GUI mode: GUI launches external `NFSLAN.exe` worker.
+- Qt launcher mode: same as above depending on your build options.
 
-The GUI passes these arguments to the worker:
+## Internet notes
 
-- `NFSLAN <ServerName>`
-- Optional: `-n` to disable runtime patching
+If logs show slave update with a local/private address such as `192.168.x.x`, remote internet players will not join correctly.
 
-In Windows single-EXE mode, GUI launches itself with `--worker` internally.
+For internet hosting:
 
-## Internet usage
-
-For internet play setup and client requirements, see `docs/CLIENT_SETUP.md`.
+- Set `ADDR` to public IP or DNS name.
+- Forward/open UDP ports required by your config (`PORT` and related service ports if customized).
+- Ensure client patch setup matches your server setup (see `docs/CLIENT_SETUP.md`).
 
 ## Notes on stopping
 
-- GUI stop sends process termination first.
-- If worker does not exit quickly, GUI force-kills the process.
+- GUI stop terminates worker process.
+- If worker does not exit cleanly, process is force-terminated.

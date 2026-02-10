@@ -1,38 +1,34 @@
 # Architecture
 
-This project structure was expanded with AI-assisted implementation and documentation, while preserving legacy worker runtime logic.
+This fork includes AI-assisted implementation and documentation updates while preserving legacy worker runtime logic.
 
 ## Components
 
-- `NFSLAN-GUI` (Qt)
-  - Manages game profiles (Most Wanted, Underground 2)
-  - Stores launcher settings via `QSettings`
-  - Starts/stops worker process (or embedded worker mode on Windows)
-  - Streams worker logs into the GUI
-
-- `NFSLAN` worker (Windows)
+- Native Win32 GUI (`native_win32`)
+  - No Qt runtime dependency
+  - Includes `server.cfg` editor in UI
+  - Starts/stops worker and streams logs
+- Qt GUI (`gui`)
+  - Optional cross-platform launcher path
+- Worker runtime (`NFSLAN.cpp`)
   - Loads `server.dll`
   - Resolves `StartServer`, `IsServerRunning`, `StopServer`
   - Applies Most Wanted runtime patching (injector/hooking)
-  - Runs server loop and handles shutdown signals
 
-## Cross-platform model
+## Runtime models
 
-- Windows single-EXE (Win32/x86): `NFSLAN-GUI.exe` -> internal `--worker` mode -> `server.dll`
-- Windows legacy: `NFSLAN-GUI` -> `NFSLAN.exe` -> `server.dll`
-- Linux: `NFSLAN-GUI` -> `wine NFSLAN.exe` -> `server.dll`
-- macOS: `NFSLAN-GUI` -> `wine/CrossOver wrapper` -> `NFSLAN.exe` -> `server.dll`
+- Windows native x64 GUI mode: `NFSLAN-GUI.exe` -> external `NFSLAN.exe` (x86) -> `server.dll`
+- Windows native single-EXE (Win32/x86): `NFSLAN-GUI.exe` -> internal `--worker` mode -> `server.dll`
+- Linux/macOS via compatibility layer: launch Windows worker through Wine/Proton/CrossOver
 
-This split isolates Windows-only binary logic into the worker and keeps GUI code portable.
+## Architecture constraints
 
-## Why non-Windows uses compatibility runtime
-
-`server.dll` and the patching flow are based on Win32 APIs and x86 binary signatures.
-A native Linux loader would require a complete reimplementation or an equivalent Linux server binary, which is not available in this repository.
-Likewise, embedded worker mode on Windows requires x86 process architecture.
+- `server.dll` and worker patching are Win32/x86-oriented.
+- Native non-Windows loading of `server.dll` is not supported in this repository.
+- Embedded single-EXE mode requires Win32/x86 process architecture.
 
 ## Future extension points
 
-- Replace Wine path with a truly native backend if a Linux-compatible server implementation appears.
 - Implement Underground 2 patching in worker (`PatchServerUG2`).
-- Add profile export/import and packaging scripts.
+- Add richer config schema and validation in native GUI.
+- Add packaged installer workflow for portable distribution.
