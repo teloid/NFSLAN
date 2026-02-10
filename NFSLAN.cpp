@@ -334,6 +334,31 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options)
         }
     }
 
+    std::string gamefileValue = TrimAscii(GetConfigValue(configText, "GAMEFILE").value_or("gamefile.bin"));
+    if (gamefileValue.empty())
+    {
+        gamefileValue = "gamefile.bin";
+    }
+
+    if (!std::filesystem::exists(std::filesystem::path(gamefileValue)))
+    {
+        if (std::filesystem::exists("gameplay.bin"))
+        {
+            if (!EqualsIgnoreCase(gamefileValue, "gameplay.bin"))
+            {
+                configText = UpsertConfigValue(configText, "GAMEFILE", "gameplay.bin");
+                changed = true;
+            }
+            std::cout << "NFSLAN: GAMEFILE '" << gamefileValue
+                      << "' not found; using gameplay.bin fallback.\n";
+        }
+        else
+        {
+            std::cout << "NFSLAN: WARNING - GAMEFILE '" << gamefileValue
+                      << "' not found. Missing game report data may cause tier/points errors.\n";
+        }
+    }
+
     const std::string addrValue = TrimAscii(GetConfigValue(configText, "ADDR").value_or(""));
     if (!addrValue.empty())
     {
