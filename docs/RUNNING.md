@@ -24,6 +24,8 @@ Do not run server directly from your game installation folder; use a separate se
 6. Configure compatibility flags:
    - `FORCE_LOCAL`: enable when hosting and playing from the same machine (UI also switches `ADDR` to `127.0.0.1`)
    - `ENABLE_GAME_ADDR_FIXUPS`: keep enabled (recommended for mixed local/public address setups)
+   - `LAN_DIAG`: optional deep LAN discovery diagnostics (verbose packet-level logs)
+   - `U2_START_MODE`: Underground 2-only StartServer mode (`0..13`, default `0`)
 7. Edit advanced keys in `server.cfg` editor and save.
 8. Start server.
 9. Verify startup diagnostics in GUI log:
@@ -39,6 +41,9 @@ Do not run server directly from your game installation folder; use a separate se
 - Native x64 GUI mode: GUI launches external `NFSLAN.exe` worker.
 - Qt launcher mode: same as above depending on your build options.
 - Console worker also supports `--same-machine` (`--local-host` alias) to force same-PC compatibility values in `server.cfg`.
+- Console worker options:
+  - `--u2-mode <0..13>`: sets UG2 StartServer mode and writes `U2_START_MODE`.
+  - `--diag-lan`: enables deep LAN diagnostics (same as `LAN_DIAG=1`).
 - Worker applies profile-specific config normalization:
   - MW: keeps `ENABLE_GAME_ADDR_FIXUPS` enabled and mirrors `ADDR/PORT` to MW auxiliary keys.
   - UG2: mirrors `ADDR/PORT` to UG2 keys (`MADDR/RADDR/AADDR`, `MPORT/RPORT/APORT`) when missing.
@@ -63,6 +68,10 @@ If the host also runs the game client on the same Windows machine:
 - Keep `ENABLE_GAME_ADDR_FIXUPS=1`.
 - Use `--same-machine` from worker/GUI so the local LAN discovery loopback bridge is enabled.
 - If local client still cannot find/join, test a non-default `PORT` instead of `9900` to avoid client/server UDP bind conflicts in some patch sets.
+
+## Preflight validation
+
+Before launch, native UI now performs profile-aware `server.cfg` validation and blocks start on critical issues (for example wrong lobby ident for selected game profile, invalid `PORT`, invalid `U2_START_MODE`).
 
 ## Notes on stopping
 

@@ -13,8 +13,10 @@
 #include <optional>
 #include <exception>
 #include <cctype>
+#include <limits>
 #include <iomanip>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <filesystem>
@@ -53,12 +55,20 @@ struct WorkerLaunchOptions
     std::string serverName;
     bool disablePatching = false;
     bool sameMachineMode = false;
+    bool lanDiag = false;
+    std::optional<int> u2Mode;
+};
+
+struct WorkerResolvedSettings
+{
+    int u2Mode = 0;
+    bool lanDiag = false;
 };
 
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-10-ug2diag-3";
+constexpr const char* kBuildTag = "2026-02-10-ug2diag-4";
 
 std::atomic<bool> gLanBridgeRunning{ false };
 std::thread gLanBridgeThread;
@@ -67,6 +77,10 @@ using SendToFn = int (WSAAPI*)(SOCKET, const char*, int, int, const sockaddr*, i
 SendToFn gOriginalSendTo = nullptr;
 std::atomic<bool> gSendToHookInstalled{ false };
 std::atomic<int> gUg2BeaconPatchedCount{ 0 };
+std::atomic<bool> gLanDiagEnabled{ false };
+std::atomic<int> gLanDiagBeaconLogCount{ 0 };
+
+bool LooksLikeUg2LanBeacon(const char* payload, int length);
 
 std::string TrimAscii(const std::string& input)
 {
@@ -94,6 +108,48 @@ bool EqualsIgnoreCase(const std::string& a, const std::string& b)
         }
     }
 
+    return true;
+}
+
+bool TryParseInt(const std::string& input, int* valueOut)
+{
+    const std::string trimmed = TrimAscii(input);
+    if (trimmed.empty())
+    {
+        return false;
+    }
+
+    char* end = nullptr;
+    const long parsed = std::strtol(trimmed.c_str(), &end, 10);
+    if (!end || *end != '\0')
+    {
+        return false;
+    }
+
+    if (parsed < static_cast<long>(std::numeric_limits<int>::min())
+        || parsed > static_cast<long>(std::numeric_limits<int>::max()))
+    {
+        return false;
+    }
+
+    *valueOut = static_cast<int>(parsed);
+    return true;
+}
+
+bool TryParseIntRange(const std::string& input, int minValue, int maxValue, int* valueOut)
+{
+    int parsed = 0;
+    if (!TryParseInt(input, &parsed))
+    {
+        return false;
+    }
+
+    if (parsed < minValue || parsed > maxValue)
+    {
+        return false;
+    }
+
+    *valueOut = parsed;
     return true;
 }
 
@@ -364,6 +420,130 @@ std::optional<std::string> ResolveCompatibleGameReportFile(const std::string& co
     return std::nullopt;
 }
 
+bool IsAsciiPrintable(char c)
+{
+    const unsigned char u = static_cast<unsigned char>(c);
+    return u >= 32 && u <= 126;
+}
+
+std::string ReadBeaconStringField(const char* payload, int length, size_t offset, size_t maxLen)
+{
+    if (!payload || length <= 0 || offset >= static_cast<size_t>(length))
+    {
+        return {};
+    }
+
+    std::string out;
+    const size_t safeMaxLen = std::min(maxLen, static_cast<size_t>(length) - offset);
+    out.reserve(safeMaxLen);
+
+    for (size_t i = 0; i < safeMaxLen; ++i)
+    {
+        const char ch = payload[offset + i];
+        if (ch == '\0')
+        {
+            break;
+        }
+        if (!IsAsciiPrintable(ch))
+        {
+            break;
+        }
+        out.push_back(ch);
+    }
+
+    return out;
+}
+
+std::string FindPrintableString(const char* payload, int length, size_t start, size_t end, size_t minLen)
+{
+    if (!payload || length <= 0 || start >= end)
+    {
+        return {};
+    }
+
+    const size_t maxBound = std::min(end, static_cast<size_t>(length));
+    for (size_t i = start; i < maxBound; ++i)
+    {
+        const std::string candidate = ReadBeaconStringField(payload, length, i, maxBound - i);
+        if (candidate.size() >= minLen)
+        {
+            return candidate;
+        }
+    }
+
+    return {};
+}
+
+std::string ExtractUg2BeaconStats(const char* payload, int length)
+{
+    constexpr size_t statsOffset = 0x48;
+    constexpr size_t statsMax = 0xC0;
+    if (!payload || length <= 0 || static_cast<size_t>(length) <= statsOffset)
+    {
+        return {};
+    }
+
+    return ReadBeaconStringField(payload, length, statsOffset, statsMax);
+}
+
+std::string HexPreview(const char* payload, int length, size_t bytesToShow)
+{
+    if (!payload || length <= 0)
+    {
+        return {};
+    }
+
+    const size_t bytes = std::min(static_cast<size_t>(length), bytesToShow);
+    std::ostringstream stream;
+    stream << std::hex << std::setfill('0');
+    for (size_t i = 0; i < bytes; ++i)
+    {
+        if (i > 0)
+        {
+            stream << ' ';
+        }
+        stream << std::setw(2) << static_cast<int>(static_cast<unsigned char>(payload[i]));
+    }
+    return stream.str();
+}
+
+bool ShouldLogLanDiagSample(std::atomic<int>* counter, int maxSamples)
+{
+    if (!gLanDiagEnabled.load())
+    {
+        return false;
+    }
+
+    const int sample = counter->fetch_add(1) + 1;
+    return sample <= maxSamples;
+}
+
+void LogUg2LanBeaconDiag(const char* sourceTag, const char* payload, int length, bool patched)
+{
+    if (!gLanDiagEnabled.load() || !LooksLikeUg2LanBeacon(payload, length))
+    {
+        return;
+    }
+
+    const std::string ident(payload + 8, payload + 15);
+    std::string serverName = ReadBeaconStringField(payload, length, 0x28, 0x20);
+    if (serverName.empty())
+    {
+        serverName = FindPrintableString(payload, length, 0x20, 0x80, 3);
+    }
+
+    const std::string stats = ExtractUg2BeaconStats(payload, length);
+    const std::string preview = HexPreview(payload, length, 64);
+
+    std::cout << "NFSLAN: LAN-DIAG " << sourceTag
+              << " ident=" << ident
+              << " stats='" << stats << "'"
+              << " name='" << serverName << "'"
+              << " patched=" << (patched ? "1" : "0")
+              << " len=" << length << '\n';
+    std::cout << "NFSLAN: LAN-DIAG " << sourceTag << " bytes[0..63]: " << preview << '\n';
+}
+
 bool LooksLikeUg2LanBeacon(const char* payload, int length)
 {
     if (!payload || length != 0x180)
@@ -438,6 +618,11 @@ int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const soc
 
     if (LooksLikeUg2LanBeacon(buf, len))
     {
+        if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 20))
+        {
+            LogUg2LanBeaconDiag("hook-send-original", buf, len, false);
+        }
+
         std::array<char, 0x180> patched{};
         std::memcpy(patched.data(), buf, patched.size());
         if (PatchUg2LanBeaconCount(patched.data(), len))
@@ -447,6 +632,12 @@ int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const soc
             {
                 std::cout << "NFSLAN: Patched UG2 LAN beacon stats to advertise at least one slot.\n";
             }
+
+            if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 20))
+            {
+                LogUg2LanBeaconDiag("hook-send-patched", patched.data(), static_cast<int>(patched.size()), true);
+            }
+
             return gOriginalSendTo(s, patched.data(), static_cast<int>(patched.size()), flags, to, tolen);
         }
     }
@@ -655,6 +846,11 @@ void RunLanDiscoveryLoopbackBridge()
         bool loggedBridgePatch = false;
         int silentCycles = 0;
 
+        if (gLanDiagEnabled.load())
+        {
+            std::cout << "NFSLAN: LAN-DIAG bridge probe enabled on UDP " << kLanDiscoveryPort << ".\n";
+        }
+
         while (gLanBridgeRunning.load())
         {
             const int sent = sendto(
@@ -715,6 +911,11 @@ void RunLanDiscoveryLoopbackBridge()
                         loggedBridgePatch = true;
                         std::cout << "NFSLAN: Patched UG2 LAN beacon stats in LAN bridge response.\n";
                     }
+                }
+
+                if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 60))
+                {
+                    LogUg2LanBeaconDiag("bridge-forward", response.data(), received, true);
                 }
 
                 forwardedAny = true;
@@ -906,7 +1107,9 @@ void PrintUsage()
         << "USAGE: NFSLAN servername [options]\n"
         << "  -n              Disable binary patching\n"
         << "  --same-machine  Force same-PC host mode (sets FORCE_LOCAL and addr fixups)\n"
-        << "  --local-host    Alias for --same-machine\n";
+        << "  --local-host    Alias for --same-machine\n"
+        << "  --u2-mode N     Underground 2 StartServer mode (0..13)\n"
+        << "  --diag-lan      Enable deep LAN discovery diagnostics\n";
 }
 
 bool ParseWorkerLaunchOptions(int argc, char* argv[], WorkerLaunchOptions* optionsOut)
@@ -931,6 +1134,28 @@ bool ParseWorkerLaunchOptions(int argc, char* argv[], WorkerLaunchOptions* optio
         {
             options.sameMachineMode = true;
         }
+        else if (arg == "--u2-mode")
+        {
+            if (i + 1 >= argc)
+            {
+                std::cerr << "ERROR: --u2-mode requires a value in range 0..13.\n";
+                return false;
+            }
+
+            int mode = 0;
+            if (!TryParseIntRange(argv[i + 1], 0, 13, &mode))
+            {
+                std::cerr << "ERROR: --u2-mode value '" << argv[i + 1] << "' is invalid. Expected 0..13.\n";
+                return false;
+            }
+
+            options.u2Mode = mode;
+            ++i;
+        }
+        else if (arg == "--diag-lan")
+        {
+            options.lanDiag = true;
+        }
         else
         {
             std::cerr << "NFSLAN: WARNING - unknown option '" << arg << "' ignored.\n";
@@ -941,12 +1166,26 @@ bool ParseWorkerLaunchOptions(int argc, char* argv[], WorkerLaunchOptions* optio
     return true;
 }
 
-bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool underground2Server)
+bool ApplyServerConfigCompatibility(
+    const WorkerLaunchOptions& options,
+    bool underground2Server,
+    WorkerResolvedSettings* resolvedOut)
 {
+    WorkerResolvedSettings resolved{};
+    resolved.lanDiag = options.lanDiag;
+    if (underground2Server && options.u2Mode.has_value())
+    {
+        resolved.u2Mode = *options.u2Mode;
+    }
+
     const std::filesystem::path configPath = "server.cfg";
     if (!std::filesystem::exists(configPath))
     {
         std::cerr << "NFSLAN: WARNING - server.cfg not found. Running with server.dll defaults.\n";
+        if (resolvedOut)
+        {
+            *resolvedOut = resolved;
+        }
         return true;
     }
 
@@ -956,6 +1195,11 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool und
         std::cerr << "ERROR: Failed to read server.cfg.\n";
         return false;
     }
+
+    const bool lanDiagFromConfig =
+        IsTruthy(GetConfigValue(configText, "LAN_DIAG").value_or("0"))
+        || IsTruthy(GetConfigValue(configText, "LAN_DIAGNOSTICS").value_or("0"));
+    resolved.lanDiag = options.lanDiag || lanDiagFromConfig;
 
     bool changed = false;
     std::cout << "NFSLAN: Detected server profile: " << (underground2Server ? "Underground 2" : "Most Wanted") << '\n';
@@ -1007,6 +1251,50 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool und
             std::cout << "NFSLAN: Same-machine mode enabled -> UG2 endpoints forced to loopback.\n";
         }
     }
+
+    if (resolved.lanDiag && !IsTruthy(GetConfigValue(configText, "LAN_DIAG").value_or("0")))
+    {
+        configText = UpsertConfigValue(configText, "LAN_DIAG", "1");
+        changed = true;
+        std::cout << "NFSLAN: Added LAN_DIAG=1 (deep LAN diagnostics enabled).\n";
+    }
+
+    if (underground2Server)
+    {
+        int resolvedMode = 0;
+        const auto modeValue = GetConfigValue(configText, "U2_START_MODE");
+        if (options.u2Mode.has_value())
+        {
+            resolvedMode = *options.u2Mode;
+            ForceConfigValue(&configText, "U2_START_MODE", std::to_string(resolvedMode), &changed);
+        }
+        else if (modeValue.has_value())
+        {
+            if (!TryParseIntRange(modeValue.value(), 0, 13, &resolvedMode))
+            {
+                std::cout << "NFSLAN: WARNING - invalid U2_START_MODE='" << modeValue.value()
+                          << "', forcing U2_START_MODE=0.\n";
+                resolvedMode = 0;
+                ForceConfigValue(&configText, "U2_START_MODE", "0", &changed);
+            }
+        }
+        else
+        {
+            resolvedMode = 0;
+            configText = UpsertConfigValue(configText, "U2_START_MODE", "0");
+            changed = true;
+            std::cout << "NFSLAN: Added U2_START_MODE=0\n";
+        }
+
+        resolved.u2Mode = resolvedMode;
+        std::cout << "NFSLAN: Effective U2 StartServer mode: " << resolved.u2Mode << '\n';
+    }
+    else if (options.u2Mode.has_value())
+    {
+        std::cout << "NFSLAN: NOTE - --u2-mode was provided for MW profile and will be ignored.\n";
+    }
+
+    std::cout << "NFSLAN: Effective LAN diagnostics: " << (resolved.lanDiag ? "enabled" : "disabled") << '\n';
 
     if (!underground2Server)
     {
@@ -1129,6 +1417,11 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool und
             return false;
         }
         std::cout << "NFSLAN: Updated server.cfg compatibility flags.\n";
+    }
+
+    if (resolvedOut)
+    {
+        *resolvedOut = resolved;
     }
 
     return true;
@@ -1489,6 +1782,10 @@ int NFSLANWorkerMain(int argc, char* argv[])
     {
         std::cout << "NFSLAN: Same-machine mode enabled.\n";
     }
+    if (options.lanDiag)
+    {
+        std::cout << "NFSLAN: Deep LAN diagnostics requested from CLI.\n";
+    }
 
     if (!std::filesystem::exists("server.dll"))
     {
@@ -1523,15 +1820,23 @@ int NFSLANWorkerMain(int argc, char* argv[])
     }
 
     const bool underground2Server = bIsUnderground2Server((uintptr_t)serverdll);
+    WorkerResolvedSettings resolved{};
 
-    if (!ApplyServerConfigCompatibility(options, underground2Server))
+    if (!ApplyServerConfigCompatibility(options, underground2Server, &resolved))
     {
         return -1;
     }
 
+    gLanDiagEnabled.store(resolved.lanDiag);
+    gLanDiagBeaconLogCount.store(0);
+
     if (underground2Server)
     {
-        InstallSendToHook(serverdll);
+        const bool sendToHookInstalled = InstallSendToHook(serverdll);
+        if (!sendToHookInstalled)
+        {
+            std::cout << "NFSLAN: WARNING - UG2 sendto hook unavailable; using bridge-level beacon diagnostics only.\n";
+        }
     }
 
     if (!bDisablePatching)
@@ -1547,7 +1852,8 @@ int NFSLANWorkerMain(int argc, char* argv[])
     signal(SIGINT, SigInterruptHandler);
     signal(SIGTERM, SigInterruptHandler);
 
-    if (!StartServer(options.serverName.data(), 0, nullptr, nullptr))
+    const int startMode = underground2Server ? resolved.u2Mode : 0;
+    if (!StartServer(options.serverName.data(), startMode, nullptr, nullptr))
     {
         std::cerr << "ERROR: could not launch server! StartServer returned false!\n";
         return -1;

@@ -25,6 +25,8 @@ Runtime note:
    - `LOBBY_IDENT=<game lobby ident>` (`NFSMWNA` for MW, `NFSU2NA` for UG2 if missing)
    - `LOBBY=<game lobby ident>` (`NFSMWNA` for MW, `NFSU2NA` for UG2 if missing)
    - `ENABLE_GAME_ADDR_FIXUPS=1` (recommended)
+   - `U2_START_MODE=0` for UG2 unless you intentionally need another mode (`0..13`)
+   - `LAN_DIAG=1` only while troubleshooting discovery/join issues (verbose logs)
    - `GAMEFILE=<valid game report file>` (must match header expected by server.dll)
 4. Open/forward your server UDP port in firewall/router (at least the `PORT` value).
 5. Start the matching GUI profile:
@@ -43,6 +45,7 @@ If the server host also runs the game client on the same PC:
 3. If client still cannot join, test a server `PORT` other than `9900`.
 4. Start the server with `--same-machine` when using console worker directly.
 5. In `--same-machine` mode, worker now enables a local LAN discovery loopback bridge on UDP `9999` to improve same-PC server visibility.
+6. For deeper packet troubleshooting, launch with `--diag-lan` (or set `LAN_DIAG=1`).
 
 ## Game-specific notes
 
@@ -87,6 +90,7 @@ Use hostnames required by your chosen client patch package (they are not defined
 ## Internet troubleshooting quick checks
 
 1. Verify server logs in `NFSLAN-GUI` show clean startup and expected build/runtime diagnostics (build tag + executable path + profile).
-2. Confirm firewall/router forwarding to the server machine for your configured UDP port(s).
-3. Confirm all players use the same game version + same client patch package.
-4. Confirm public IP/DNS in `server.cfg` (`ADDR`) is reachable from outside your LAN.
+2. If server is still invisible, enable `LAN_DIAG=1` and compare `LAN-DIAG` beacon logs (ident/stats/name) with packet capture.
+3. Confirm firewall/router forwarding to the server machine for your configured UDP port(s).
+4. Confirm all players use the same game version + same client patch package.
+5. Confirm public IP/DNS in `server.cfg` (`ADDR`) is reachable from outside your LAN.

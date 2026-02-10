@@ -38,8 +38,10 @@ enum ControlId : int
     kIdBrowseWorker,
     kIdPort,
     kIdAddr,
+    kIdU2StartMode,
     kIdForceLocal,
     kIdEnableAddrFixups,
+    kIdLanDiag,
     kIdDisablePatching,
     kIdLoadConfig,
     kIdSaveConfig,
@@ -58,8 +60,10 @@ struct AppState
     HWND workerPathEdit = nullptr;
     HWND portEdit = nullptr;
     HWND addrEdit = nullptr;
+    HWND u2StartModeEdit = nullptr;
     HWND forceLocalCheck = nullptr;
     HWND enableAddrFixupsCheck = nullptr;
+    HWND lanDiagCheck = nullptr;
     HWND disablePatchingCheck = nullptr;
     HWND configEditor = nullptr;
     HWND logView = nullptr;
@@ -604,6 +608,182 @@ std::wstring formatWin32Error(DWORD errorCode)
     return trim(message);
 }
 
+bool tryParseIntRange(const std::wstring& text, int minValue, int maxValue, int* valueOut)
+{
+    const std::wstring trimmed = trim(text);
+    if (trimmed.empty())
+    {
+        return false;
+    }
+
+    wchar_t* end = nullptr;
+    const long parsed = std::wcstol(trimmed.c_str(), &end, 10);
+    if (!end || *end != L'\0')
+    {
+        return false;
+    }
+
+    if (parsed < minValue || parsed > maxValue)
+    {
+        return false;
+    }
+
+    *valueOut = static_cast<int>(parsed);
+    return true;
+}
+
+void refreshProfileSpecificControls()
+{
+    if (!g_app.u2StartModeEdit)
+    {
+        return;
+    }
+
+    const bool isU2Profile = (currentGameProfileIndex() == kGameProfileUnderground2);
+    const BOOL modeEnabled = (!g_app.running && isU2Profile) ? TRUE : FALSE;
+    EnableWindow(g_app.u2StartModeEdit, modeEnabled);
+}
+
+bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std::wstring* blockingErrorOut)
+{
+    const std::wstring configText = getWindowTextString(g_app.configEditor);
+    const int profile = currentGameProfileIndex();
+    const std::wstring expectedLobby = (profile == kGameProfileUnderground2) ? L"NFSU2NA" : L"NFSMWNA";
+
+    std::vector<std::wstring> errors;
+    std::vector<std::wstring> warnings;
+
+    int port = 0;
+    if (!tryParseIntRange(getConfigValue(configText, L"PORT"), 1, 65535, &port))
+    {
+        errors.push_back(L"PORT must be an integer in range 1..65535.");
+    }
+
+    const std::wstring addr = trim(getConfigValue(configText, L"ADDR"));
+    if (addr.empty())
+    {
+        errors.push_back(L"ADDR must not be empty.");
+    }
+
+    const std::wstring lobbyIdent = trim(getConfigValue(configText, L"LOBBY_IDENT"));
+    const std::wstring lobby = trim(getConfigValue(configText, L"LOBBY"));
+
+    if (lobbyIdent.empty())
+    {
+        errors.push_back(L"LOBBY_IDENT is missing.");
+    }
+    else if (!equalCaseInsensitive(lobbyIdent, expectedLobby))
+    {
+        errors.push_back(
+            L"LOBBY_IDENT must be " + expectedLobby + L" for selected profile, got '" + lobbyIdent + L"'.");
+    }
+
+    if (lobby.empty())
+    {
+        errors.push_back(L"LOBBY is missing.");
+    }
+    else if (!equalCaseInsensitive(lobby, expectedLobby))
+    {
+        errors.push_back(
+            L"LOBBY must be " + expectedLobby + L" for selected profile, got '" + lobby + L"'.");
+    }
+
+    int u2Mode = 0;
+    const std::wstring u2ModeText = trim(getConfigValue(configText, L"U2_START_MODE"));
+    if (profile == kGameProfileUnderground2)
+    {
+        if (!tryParseIntRange(u2ModeText.empty() ? L"0" : u2ModeText, 0, 13, &u2Mode))
+        {
+            errors.push_back(L"U2_START_MODE must be an integer in range 0..13 for Underground 2.");
+        }
+
+        if (!trim(getConfigValue(configText, L"CADDR")).empty()
+            || !trim(getConfigValue(configText, L"CPORT")).empty())
+        {
+            warnings.push_back(
+                L"CADDR/CPORT are MW-oriented keys; they are usually ignored for Underground 2 profile.");
+        }
+    }
+    else
+    {
+        if (!u2ModeText.empty() && !equalCaseInsensitive(u2ModeText, L"0"))
+        {
+            warnings.push_back(L"U2_START_MODE is set but selected profile is MW; worker will ignore it.");
+        }
+
+        if (!trim(getConfigValue(configText, L"MADDR")).empty()
+            || !trim(getConfigValue(configText, L"RADDR")).empty()
+            || !trim(getConfigValue(configText, L"MPORT")).empty()
+            || !trim(getConfigValue(configText, L"RPORT")).empty())
+        {
+            warnings.push_back(
+                L"MADDR/RADDR/MPORT/RPORT are UG2-oriented keys; verify MW AADDR/CADDR/APORT/CPORT are correct.");
+        }
+
+        const bool fixupsEnabled =
+            parseBoolConfigValue(getConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS"), true);
+        if (!fixupsEnabled)
+        {
+            warnings.push_back(
+                L"ENABLE_GAME_ADDR_FIXUPS=0 can break mixed local/public address join behavior on MW.");
+        }
+    }
+
+    const std::wstring gamefile = trim(getConfigValue(configText, L"GAMEFILE"));
+    if (!gamefile.empty())
+    {
+        std::filesystem::path gamefilePath = std::filesystem::path(gamefile);
+        if (!gamefilePath.is_absolute())
+        {
+            gamefilePath = serverDir / gamefilePath;
+        }
+
+        std::error_code ec;
+        if (!std::filesystem::exists(gamefilePath, ec))
+        {
+            warnings.push_back(L"GAMEFILE '" + gamefile + L"' does not exist in server directory.");
+        }
+    }
+    else
+    {
+        warnings.push_back(L"GAMEFILE is not set; worker will try gamefile.bin/gameplay.bin automatically.");
+    }
+
+    if (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED)
+    {
+        if (!equalCaseInsensitive(addr, L"127.0.0.1"))
+        {
+            warnings.push_back(L"FORCE_LOCAL is enabled but ADDR is not 127.0.0.1.");
+        }
+        if (port == 9900)
+        {
+            warnings.push_back(
+                L"Same-machine mode with PORT=9900 may conflict with client bind on some patches.");
+        }
+    }
+
+    for (const auto& warning : warnings)
+    {
+        appendLogLine(L"Preflight warning: " + warning);
+    }
+
+    if (errors.empty())
+    {
+        appendLogLine(L"Preflight validation passed for profile " + gameProfileDisplayName(profile) + L".");
+        return true;
+    }
+
+    std::wstring message = L"Cannot start server due to config validation errors:\n";
+    for (const auto& error : errors)
+    {
+        appendLogLine(L"Preflight error: " + error);
+        message += L"- " + error + L"\n";
+    }
+
+    *blockingErrorOut = message;
+    return false;
+}
+
 void setUiRunningState(bool running)
 {
     g_app.running = running;
@@ -619,6 +799,7 @@ void setUiRunningState(bool running)
     EnableWindow(g_app.addrEdit, running ? FALSE : TRUE);
     EnableWindow(g_app.forceLocalCheck, running ? FALSE : TRUE);
     EnableWindow(g_app.enableAddrFixupsCheck, running ? FALSE : TRUE);
+    EnableWindow(g_app.lanDiagCheck, running ? FALSE : TRUE);
     EnableWindow(g_app.disablePatchingCheck, running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.window, kIdLoadConfig), running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.window, kIdSaveConfig), running ? FALSE : TRUE);
@@ -631,6 +812,8 @@ void setUiRunningState(bool running)
     EnableWindow(g_app.workerPathEdit, running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.window, kIdBrowseWorker), running ? FALSE : TRUE);
 #endif
+
+    refreshProfileSpecificControls();
 }
 
 bool readTextFile(const std::filesystem::path& path, std::wstring* outText)
@@ -675,11 +858,26 @@ void syncFieldsFromConfigEditor()
         setWindowTextString(g_app.addrEdit, addrValue);
     }
 
+    const std::wstring u2StartModeValue = trim(getConfigValue(configText, L"U2_START_MODE"));
+    if (!u2StartModeValue.empty())
+    {
+        setWindowTextString(g_app.u2StartModeEdit, u2StartModeValue);
+    }
+    else
+    {
+        setWindowTextString(g_app.u2StartModeEdit, L"0");
+    }
+
     const bool forceLocalEnabled = parseBoolConfigValue(getConfigValue(configText, L"FORCE_LOCAL"), false);
     SendMessageW(g_app.forceLocalCheck, BM_SETCHECK, forceLocalEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
     const bool addrFixupsEnabled = parseBoolConfigValue(getConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS"), true);
     SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, addrFixupsEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+
+    const bool lanDiagEnabled = parseBoolConfigValue(
+        getConfigValue(configText, L"LAN_DIAG"),
+        parseBoolConfigValue(getConfigValue(configText, L"LAN_DIAGNOSTICS"), false));
+    SendMessageW(g_app.lanDiagCheck, BM_SETCHECK, lanDiagEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 void applyFieldsToConfigEditor()
@@ -688,6 +886,9 @@ void applyFieldsToConfigEditor()
 
     const std::wstring portValue = trim(getWindowTextString(g_app.portEdit));
     const std::wstring addrValue = trim(getWindowTextString(g_app.addrEdit));
+    const std::wstring u2StartModeValue = trim(getWindowTextString(g_app.u2StartModeEdit));
+    const std::wstring expectedLobby =
+        (currentGameProfileIndex() == kGameProfileUnderground2) ? L"NFSU2NA" : L"NFSMWNA";
 
     if (!portValue.empty())
     {
@@ -699,11 +900,29 @@ void applyFieldsToConfigEditor()
         configText = upsertConfigValue(configText, L"ADDR", addrValue);
     }
 
+    if (!u2StartModeValue.empty())
+    {
+        configText = upsertConfigValue(configText, L"U2_START_MODE", u2StartModeValue);
+    }
+
+    if (trim(getConfigValue(configText, L"LOBBY_IDENT")).empty())
+    {
+        configText = upsertConfigValue(configText, L"LOBBY_IDENT", expectedLobby);
+    }
+
+    if (trim(getConfigValue(configText, L"LOBBY")).empty())
+    {
+        configText = upsertConfigValue(configText, L"LOBBY", expectedLobby);
+    }
+
     const bool forceLocalEnabled = (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     configText = upsertConfigValue(configText, L"FORCE_LOCAL", forceLocalEnabled ? L"1" : L"0");
 
     const bool addrFixupsEnabled = (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     configText = upsertConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS", addrFixupsEnabled ? L"1" : L"0");
+
+    const bool lanDiagEnabled = (SendMessageW(g_app.lanDiagCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    configText = upsertConfigValue(configText, L"LAN_DIAG", lanDiagEnabled ? L"1" : L"0");
 
     setWindowTextString(g_app.configEditor, configText);
 }
@@ -925,13 +1144,22 @@ void startWorker()
         return;
     }
 
+    applyFieldsToConfigEditor();
+
+    const std::filesystem::path serverDir = currentServerDirectory();
+    if (!validateProfileConfigForLaunch(serverDir, &error))
+    {
+        showError(error);
+        return;
+    }
+
     if (!saveServerConfig(true))
     {
         return;
     }
 
     const std::wstring serverName = trim(getWindowTextString(g_app.serverNameEdit));
-    const std::filesystem::path serverDir = currentServerDirectory();
+    const std::wstring u2ModeText = trim(getWindowTextString(g_app.u2StartModeEdit));
     const std::wstring profileName = gameProfileDisplayName(currentGameProfileIndex());
 
     std::wstring executablePath;
@@ -953,6 +1181,16 @@ void startWorker()
     if (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED)
     {
         commandLine += L" --same-machine";
+    }
+
+    if (SendMessageW(g_app.lanDiagCheck, BM_GETCHECK, 0, 0) == BST_CHECKED)
+    {
+        commandLine += L" --diag-lan";
+    }
+
+    if (currentGameProfileIndex() == kGameProfileUnderground2 && !u2ModeText.empty())
+    {
+        commandLine += L" --u2-mode " + u2ModeText;
     }
 
     appendLogLine(L"UI build tag: " + std::wstring(kUiBuildTag));
@@ -1038,6 +1276,7 @@ void saveSettings()
     WritePrivateProfileStringW(L"launcher", L"serverDir", trim(getWindowTextString(g_app.serverDirEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"port", trim(getWindowTextString(g_app.portEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"addr", trim(getWindowTextString(g_app.addrEdit)).c_str(), path.c_str());
+    WritePrivateProfileStringW(L"launcher", L"u2StartMode", trim(getWindowTextString(g_app.u2StartModeEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(
         L"launcher",
         L"forceLocal",
@@ -1047,6 +1286,11 @@ void saveSettings()
         L"launcher",
         L"enableAddrFixups",
         (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
+        path.c_str());
+    WritePrivateProfileStringW(
+        L"launcher",
+        L"lanDiag",
+        (SendMessageW(g_app.lanDiagCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
         path.c_str());
     WritePrivateProfileStringW(
         L"launcher",
@@ -1078,6 +1322,7 @@ void loadSettings()
     setWindowTextString(g_app.serverDirEdit, readIniValue(L"serverDir", getWindowTextString(g_app.serverDirEdit)));
     setWindowTextString(g_app.portEdit, readIniValue(L"port", L"9900"));
     setWindowTextString(g_app.addrEdit, readIniValue(L"addr", L"0.0.0.0"));
+    setWindowTextString(g_app.u2StartModeEdit, readIniValue(L"u2StartMode", L"0"));
     SendMessageW(
         g_app.forceLocalCheck,
         BM_SETCHECK,
@@ -1087,6 +1332,11 @@ void loadSettings()
         g_app.enableAddrFixupsCheck,
         BM_SETCHECK,
         (readIniValue(L"enableAddrFixups", L"1") == L"1") ? BST_CHECKED : BST_UNCHECKED,
+        0);
+    SendMessageW(
+        g_app.lanDiagCheck,
+        BM_SETCHECK,
+        (readIniValue(L"lanDiag", L"0") == L"1") ? BST_CHECKED : BST_UNCHECKED,
         0);
 
     const bool disablePatching = (readIniValue(L"disablePatching", L"0") == L"1");
@@ -1102,6 +1352,7 @@ void loadSettings()
         appendLogLine(L"Profile default server directory applied: " + currentServerDirectory().wstring());
     }
 
+    refreshProfileSpecificControls();
     refreshRuntimeSummaryLabel();
 }
 
@@ -1123,6 +1374,7 @@ void updateDefaultsForCurrentGame(bool logChanges)
         }
     }
 
+    refreshProfileSpecificControls();
     refreshRuntimeSummaryLabel();
 }
 
@@ -1291,6 +1543,42 @@ void createUi(HWND window)
         nullptr,
         nullptr);
     applyDefaultFontToWindow(g_app.runtimeSummaryLabel);
+
+    y += rowHeight + rowGap;
+
+    createLabel(window, L"U2_START_MODE", left, y + 4, labelWidth, rowHeight);
+    g_app.u2StartModeEdit = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        L"EDIT",
+        L"0",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        left + labelWidth,
+        y,
+        70,
+        rowHeight,
+        window,
+        reinterpret_cast<HMENU>(kIdU2StartMode),
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.u2StartModeEdit);
+
+    createLabel(window, L"(Underground 2 only, range 0..13)", left + labelWidth + 84, y + 4, 250, rowHeight);
+
+    g_app.lanDiagCheck = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"Deep LAN diagnostics (--diag-lan)",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        left + 470,
+        y,
+        300,
+        rowHeight,
+        window,
+        reinterpret_cast<HMENU>(kIdLanDiag),
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.lanDiagCheck);
+    SendMessageW(g_app.lanDiagCheck, BM_SETCHECK, BST_UNCHECKED, 0);
 
     y += rowHeight + rowGap;
 
@@ -1518,6 +1806,29 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
             const bool enabled = (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
             appendLogLine(
                 std::wstring(L"ENABLE_GAME_ADDR_FIXUPS set to ") + (enabled ? L"1" : L"0") + L" in UI.");
+            applyFieldsToConfigEditor();
+        }
+        return 0;
+
+    case kIdLanDiag:
+        if (commandCode == BN_CLICKED)
+        {
+            const bool enabled = (SendMessageW(g_app.lanDiagCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            appendLogLine(std::wstring(L"LAN_DIAG set to ") + (enabled ? L"1" : L"0") + L" in UI.");
+            applyFieldsToConfigEditor();
+        }
+        return 0;
+
+    case kIdU2StartMode:
+        if (commandCode == EN_KILLFOCUS)
+        {
+            const std::wstring raw = trim(getWindowTextString(g_app.u2StartModeEdit));
+            int parsed = 0;
+            if (!raw.empty() && !tryParseIntRange(raw, 0, 13, &parsed))
+            {
+                setWindowTextString(g_app.u2StartModeEdit, L"0");
+                appendLogLine(L"U2_START_MODE must be 0..13. Reset to 0.");
+            }
             applyFieldsToConfigEditor();
         }
         return 0;
