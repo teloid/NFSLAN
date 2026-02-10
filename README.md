@@ -16,6 +16,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 - Optional separate `NFSLAN` worker build on Windows in external-worker mode
 - Existing injector/hooking code used by the worker for Most Wanted patching
 - Worker-side MW/UG2 config normalization and game-report file header validation (`gamefile.bin` / `gameplay.bin`)
+- Worker now auto-fills missing `LOBBY_IDENT`/`LOBBY` defaults (`NFSU` or `NFSMW`) and can run a same-machine LAN discovery loopback bridge on UDP `9999`
 
 ## Important platform reality
 

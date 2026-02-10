@@ -22,6 +22,8 @@ Runtime note:
 3. Set at least these values in `server.cfg`:
    - `PORT=<public port>` (commonly `9900`)
    - `ADDR=<public server IP or DNS name>`
+   - `LOBBY_IDENT=<game lobby ident>` (launcher now auto-fills missing value)
+   - `LOBBY=<game lobby ident>` (launcher now auto-fills missing value)
    - `ENABLE_GAME_ADDR_FIXUPS=1` (recommended)
    - `GAMEFILE=<valid game report file>` (must match header expected by server.dll)
 4. Open/forward your server UDP port in firewall/router (at least the `PORT` value).
@@ -40,6 +42,7 @@ If the server host also runs the game client on the same PC:
 2. Keep `ENABLE_GAME_ADDR_FIXUPS=1`.
 3. If client still cannot join, test a server `PORT` other than `9900`.
 4. Start the server with `--same-machine` when using console worker directly.
+5. In `--same-machine` mode, worker now enables a local LAN discovery loopback bridge on UDP `9999` to improve same-PC server visibility.
 
 ## Game-specific notes
 

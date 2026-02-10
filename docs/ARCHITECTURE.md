@@ -15,8 +15,9 @@ This fork includes AI-assisted implementation and documentation updates while pr
   - Resolves `StartServer`, `IsServerRunning`, `StopServer`
   - Applies Most Wanted runtime patching (injector/hooking)
   - Applies startup `server.cfg` compatibility preflight (`ENABLE_GAME_ADDR_FIXUPS`, optional same-machine `FORCE_LOCAL`)
-  - Applies profile-specific key normalization for MW vs UG2 network config keys
+  - Applies profile-specific key normalization for MW vs UG2 network config keys (including `LOBBY_IDENT`/`LOBBY` defaults)
   - Validates/selects compatible game report file (`gamefile.bin`/`gameplay.bin`) by header, not only filename
+  - Optional same-machine LAN discovery loopback bridge (`UDP 9999`) in `--same-machine` mode
 
 ## Runtime models
 

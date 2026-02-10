@@ -35,6 +35,7 @@ Do not run server directly from your game installation folder; use a separate se
 - Worker applies profile-specific config normalization:
   - MW: keeps `ENABLE_GAME_ADDR_FIXUPS` enabled and mirrors `ADDR/PORT` to MW auxiliary keys.
   - UG2: mirrors `ADDR/PORT` to UG2 keys (`MADDR/RADDR/AADDR`, `MPORT/RPORT/APORT`) when missing.
+  - Both profiles: ensures non-empty `LOBBY_IDENT`/`LOBBY` defaults (`NFSMW` for MW, `NFSU` for UG2) when missing.
 - Worker validates game report file header (`ident=0x9A3E`, `version=2`) and auto-selects compatible file from `GAMEFILE`, `gamefile.bin`, `gameplay.bin`.
 
 ## Internet notes
@@ -53,6 +54,7 @@ If the host also runs the game client on the same Windows machine:
 
 - Enable `FORCE_LOCAL`.
 - Keep `ENABLE_GAME_ADDR_FIXUPS=1`.
+- Use `--same-machine` from worker/GUI so the local LAN discovery loopback bridge is enabled.
 - If local client still cannot find/join, test a non-default `PORT` instead of `9900` to avoid client/server UDP bind conflicts in some patch sets.
 
 ## Notes on stopping

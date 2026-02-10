@@ -11,11 +11,13 @@
 #include <fstream>
 #include <sstream>
 #include <optional>
+#include <exception>
 #include <cctype>
 #include <iomanip>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <atomic>
 #include <signal.h>
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -54,6 +56,10 @@ struct WorkerLaunchOptions
 
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
+constexpr int kLanDiscoveryPort = 9999;
+
+std::atomic<bool> gLanBridgeRunning{ false };
+std::thread gLanBridgeThread;
 
 std::string TrimAscii(const std::string& input)
 {
@@ -317,6 +323,163 @@ std::optional<std::string> ResolveCompatibleGameReportFile(const std::string& co
     return std::nullopt;
 }
 
+bool IsLanDiscoveryPacket(const char* data, int length)
+{
+    return data && length >= 9 && data[0] == 'g' && data[1] == 'E' && data[2] == 'A';
+}
+
+std::array<char, 0x180> BuildLanDiscoveryQueryPacket()
+{
+    std::array<char, 0x180> packet{};
+    packet[0] = 'g';
+    packet[1] = 'E';
+    packet[2] = 'A';
+    packet[8] = '?';
+    return packet;
+}
+
+void RunLanDiscoveryLoopbackBridge()
+{
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET)
+    {
+        std::cerr << "NFSLAN: WARNING - LAN bridge socket creation failed.\n";
+        return;
+    }
+
+    DWORD recvTimeoutMs = 250;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&recvTimeoutMs), sizeof(recvTimeoutMs));
+    int allowBroadcast = 1;
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&allowBroadcast), sizeof(allowBroadcast));
+
+    sockaddr_in serverAddr{};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
+    serverAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    sockaddr_in localClientAddr{};
+    localClientAddr.sin_family = AF_INET;
+    localClientAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
+    localClientAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    const auto queryPacket = BuildLanDiscoveryQueryPacket();
+    bool loggedFirstResponse = false;
+    int silentCycles = 0;
+
+    while (gLanBridgeRunning.load())
+    {
+        const int sent = sendto(
+            sock,
+            queryPacket.data(),
+            static_cast<int>(queryPacket.size()),
+            0,
+            reinterpret_cast<sockaddr*>(&serverAddr),
+            sizeof(serverAddr));
+
+        if (sent < 0)
+        {
+            ++silentCycles;
+            Sleep(1000);
+            continue;
+        }
+
+        bool forwardedAny = false;
+        for (int i = 0; i < 8; ++i)
+        {
+            std::array<char, 0x180> response{};
+            sockaddr_in from{};
+            int fromLen = sizeof(from);
+            const int received = recvfrom(
+                sock,
+                response.data(),
+                static_cast<int>(response.size()),
+                0,
+                reinterpret_cast<sockaddr*>(&from),
+                &fromLen);
+
+            if (received <= 0)
+            {
+                break;
+            }
+
+            if (!IsLanDiscoveryPacket(response.data(), received))
+            {
+                continue;
+            }
+
+            if (response[8] == '?')
+            {
+                continue;
+            }
+
+            forwardedAny = true;
+            sendto(
+                sock,
+                response.data(),
+                received,
+                0,
+                reinterpret_cast<sockaddr*>(&localClientAddr),
+                sizeof(localClientAddr));
+
+            if (!loggedFirstResponse)
+            {
+                loggedFirstResponse = true;
+                std::cout << "NFSLAN: Same-machine LAN bridge active on UDP " << kLanDiscoveryPort << ".\n";
+            }
+        }
+
+        if (forwardedAny)
+        {
+            silentCycles = 0;
+        }
+        else
+        {
+            ++silentCycles;
+            if (silentCycles == 5)
+            {
+                std::cout << "NFSLAN: WARNING - no LAN discovery replies seen on loopback yet.\n";
+            }
+        }
+
+        Sleep(1000);
+    }
+
+    closesocket(sock);
+}
+
+void StartLanDiscoveryLoopbackBridge(bool enabled)
+{
+    if (!enabled || gLanBridgeRunning.load())
+    {
+        return;
+    }
+
+    gLanBridgeRunning.store(true);
+    try
+    {
+        gLanBridgeThread = std::thread(RunLanDiscoveryLoopbackBridge);
+    }
+    catch (const std::exception& ex)
+    {
+        gLanBridgeRunning.store(false);
+        std::cerr << "NFSLAN: WARNING - failed to start LAN bridge thread: " << ex.what() << '\n';
+    }
+}
+
+void StopLanDiscoveryLoopbackBridge()
+{
+    if (!gLanBridgeRunning.load())
+    {
+        return;
+    }
+
+    gLanBridgeRunning.store(false);
+    if (gLanBridgeThread.joinable())
+    {
+        gLanBridgeThread.join();
+    }
+}
+
 bool ParseIpv4(const std::string& input, uint8_t* octets)
 {
     unsigned int a = 0;
@@ -430,6 +593,10 @@ bool ApplyServerConfigCompatibility(const WorkerLaunchOptions& options, bool und
 
     bool changed = false;
     std::cout << "NFSLAN: Detected server profile: " << (underground2Server ? "Underground 2" : "Most Wanted") << '\n';
+
+    const std::string lobbyIdentDefault = underground2Server ? "NFSU" : "NFSMW";
+    EnsureConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
+    EnsureConfigValue(&configText, "LOBBY", lobbyIdentDefault, &changed);
 
     const std::string portValue = EnsureConfigValue(&configText, "PORT", "9900", &changed);
     const std::string addrValue = EnsureConfigValue(&configText, "ADDR", "0.0.0.0", &changed);
@@ -894,6 +1061,7 @@ bool bIsUnderground2Server(uintptr_t base)
 
 void SigInterruptHandler(int signum)
 {
+    StopLanDiscoveryLoopbackBridge();
     if (IsServerRunning())
     {
         std::cout << "NFSLAN: Stopping server...\n";
@@ -986,8 +1154,11 @@ int NFSLANWorkerMain(int argc, char* argv[])
         return -1;
     }
 
+    StartLanDiscoveryLoopbackBridge(options.sameMachineMode);
+
     std::cout << "NFSLAN: Server started. To stop gracefully, send CTRL+C to the console\n";
     while (IsServerRunning()) { Sleep(1); }
+    StopLanDiscoveryLoopbackBridge();
     if (IsServerRunning())
     {
         std::cout << "NFSLAN: Stopping server...\n";
