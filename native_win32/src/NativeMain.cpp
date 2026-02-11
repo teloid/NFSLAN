@@ -1,3 +1,11 @@
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
@@ -648,6 +656,120 @@ bool tryParseIntRange(const std::wstring& text, int minValue, int maxValue, int*
     return true;
 }
 
+std::wstring normalizeIdentityTokenForMutex(const std::wstring& input)
+{
+    std::wstring out;
+    out.reserve(input.size());
+
+    for (wchar_t ch : input)
+    {
+        if ((ch >= L'0' && ch <= L'9')
+            || (ch >= L'A' && ch <= L'Z')
+            || (ch >= L'a' && ch <= L'z')
+            || ch == L'_' || ch == L'-' || ch == L'.')
+        {
+            out.push_back(towupper(ch));
+        }
+        else
+        {
+            out.push_back(L'_');
+        }
+    }
+
+    if (out.empty())
+    {
+        return L"UNKNOWN";
+    }
+    return out;
+}
+
+std::wstring buildServerIdentityMutexName(const std::wstring& lobbyIdent, int port)
+{
+    return L"Local\\NFSLAN_SERVER_IDENT_"
+        + normalizeIdentityTokenForMutex(trim(lobbyIdent))
+        + L"_"
+        + std::to_wstring(port);
+}
+
+bool isServerIdentityLockedLocally(const std::wstring& lobbyIdent, int port)
+{
+    const std::wstring mutexName = buildServerIdentityMutexName(lobbyIdent, port);
+    HANDLE mutexHandle = OpenMutexW(SYNCHRONIZE, FALSE, mutexName.c_str());
+    if (!mutexHandle)
+    {
+        return false;
+    }
+
+    CloseHandle(mutexHandle);
+    return true;
+}
+
+struct ScopedWsaSession
+{
+    bool started = false;
+
+    ScopedWsaSession()
+    {
+        WSADATA wsadata{};
+        started = (WSAStartup(MAKEWORD(2, 2), &wsadata) == 0);
+    }
+
+    ~ScopedWsaSession()
+    {
+        if (started)
+        {
+            WSACleanup();
+        }
+    }
+};
+
+bool isPortBusyLocalBind(int socketType, int protocol, uint16_t port, int* wsaErrorOut)
+{
+    SOCKET socketHandle = socket(AF_INET, socketType, protocol);
+    if (socketHandle == INVALID_SOCKET)
+    {
+        if (wsaErrorOut)
+        {
+            *wsaErrorOut = WSAGetLastError();
+        }
+        return false;
+    }
+
+    BOOL exclusive = TRUE;
+    setsockopt(
+        socketHandle,
+        SOL_SOCKET,
+        SO_EXCLUSIVEADDRUSE,
+        reinterpret_cast<const char*>(&exclusive),
+        sizeof(exclusive));
+
+    sockaddr_in bindAddr{};
+    bindAddr.sin_family = AF_INET;
+    bindAddr.sin_port = htons(port);
+    bindAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    const int bindResult = bind(socketHandle, reinterpret_cast<const sockaddr*>(&bindAddr), sizeof(bindAddr));
+    if (bindResult == SOCKET_ERROR)
+    {
+        const int err = WSAGetLastError();
+        closesocket(socketHandle);
+
+        if (wsaErrorOut)
+        {
+            *wsaErrorOut = err;
+        }
+
+        return (err == WSAEADDRINUSE || err == WSAEACCES);
+    }
+
+    closesocket(socketHandle);
+    if (wsaErrorOut)
+    {
+        *wsaErrorOut = 0;
+    }
+    return false;
+}
+
 void refreshProfileSpecificControls()
 {
     if (!g_app.u2StartModeEdit)
@@ -775,6 +897,55 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
         {
             warnings.push_back(
                 L"Same-machine mode with PORT=9900 may conflict with client bind on some patches.");
+        }
+    }
+
+    if (port > 0 && !lobbyIdent.empty())
+    {
+        if (isServerIdentityLockedLocally(lobbyIdent, port))
+        {
+            errors.push_back(
+                L"Another NFSLAN server instance with the same identity is already running "
+                L"(LOBBY_IDENT=" + lobbyIdent + L", PORT=" + std::to_wstring(port) + L").");
+        }
+    }
+
+    if (port > 0)
+    {
+        ScopedWsaSession wsa;
+        if (!wsa.started)
+        {
+            warnings.push_back(L"Could not initialize Winsock for strict port preflight checks.");
+        }
+        else
+        {
+            int udp9999Err = 0;
+            if (isPortBusyLocalBind(SOCK_DGRAM, IPPROTO_UDP, 9999, &udp9999Err))
+            {
+                errors.push_back(
+                    L"UDP port 9999 is already in use locally (WSA " + std::to_wstring(udp9999Err)
+                    + L"). Stop in-game host/server or conflicting relay before launching.");
+            }
+
+            const uint16_t servicePort = static_cast<uint16_t>(port);
+            if (servicePort != 9999)
+            {
+                int udpServiceErr = 0;
+                if (isPortBusyLocalBind(SOCK_DGRAM, IPPROTO_UDP, servicePort, &udpServiceErr))
+                {
+                    errors.push_back(
+                        L"Configured UDP service port " + std::to_wstring(servicePort)
+                        + L" is already in use locally (WSA " + std::to_wstring(udpServiceErr) + L").");
+                }
+            }
+
+            int tcpServiceErr = 0;
+            if (isPortBusyLocalBind(SOCK_STREAM, IPPROTO_TCP, static_cast<uint16_t>(port), &tcpServiceErr))
+            {
+                errors.push_back(
+                    L"Configured TCP service port " + std::to_wstring(port)
+                    + L" is already in use locally (WSA " + std::to_wstring(tcpServiceErr) + L").");
+            }
         }
     }
 

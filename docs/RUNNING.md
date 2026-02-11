@@ -73,6 +73,14 @@ If the host also runs the game client on the same Windows machine:
 
 Before launch, native UI now performs profile-aware `server.cfg` validation and blocks start on critical issues (for example wrong lobby ident for selected game profile, invalid `PORT`, invalid `U2_START_MODE`).
 
+Native UI also now enforces strict local conflict checks before launch:
+
+- blocks if UDP `9999` is already occupied
+- blocks if configured service `PORT` is already occupied (UDP/TCP)
+- blocks if another NFSLAN instance already owns the same identity (`LOBBY_IDENT` + `PORT`)
+
+Worker runtime also acquires the same identity lock, so duplicate same-profile/same-port launches are rejected even outside GUI preflight.
+
 ## Notes on stopping
 
 - GUI stop terminates worker process.

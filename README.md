@@ -13,6 +13,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 - Native Win32 relay app (`NFSLAN-Relay`) for cross-subnet/cross-site LAN discovery forwarding (UG2/MW style UDP `9999` broadcast relay)
 - Native Win32 launcher includes explicit `FORCE_LOCAL` and `ENABLE_GAME_ADDR_FIXUPS` toggles for same-machine host+client scenarios
 - Native Win32 launcher includes `U2_START_MODE` (`0..13`) and `LAN_DIAG` controls with profile-aware preflight validation before launch
+- Native Win32 launcher preflight now blocks local port conflicts (`UDP 9999`, service UDP/TCP `PORT`) and duplicate server identity (`LOBBY_IDENT` + `PORT`)
 - Native Win32 launcher logs build tag, executable path, worker launch mode, and effective profile/runtime paths at startup
 - Qt launcher (`NFSLAN-GUI`/`NFSLAN-NativeGUI` depending on build options) for cross-platform workflows
 - Windows single-executable mode: GUI + worker runtime embedded in the same EXE (Win32/x86 build)
@@ -21,6 +22,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 - Worker-side MW/UG2 config normalization and game-report file header validation (`gamefile.bin` / `gameplay.bin`)
 - Worker now auto-fills missing `LOBBY_IDENT`/`LOBBY` defaults (`NFSU2NA` for UG2, `NFSMWNA` for MW) and can run a same-machine LAN discovery loopback bridge on UDP `9999`
 - Worker supports `--u2-mode` and `--diag-lan` for UG2 mode control and deep LAN packet diagnostics
+- Worker enforces the same server identity lock and includes UG2 beacon field normalization + packet diff diagnostics (`field-diff`, `byte-diff offsets`)
 
 ## Important platform reality
 

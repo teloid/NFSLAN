@@ -91,6 +91,7 @@ Use hostnames required by your chosen client patch package (they are not defined
 
 1. Verify server logs in `NFSLAN-GUI` show clean startup and expected build/runtime diagnostics (build tag + executable path + profile).
 2. If server is still invisible, enable `LAN_DIAG=1` and compare `LAN-DIAG` beacon logs (ident/stats/name) with packet capture.
+   - New diagnostics include `field-diff` and `byte-diff offsets` lines for UG2 beacons, showing exactly what wrapper normalization changed.
 3. Confirm firewall/router forwarding to the server machine for your configured UDP port(s).
 4. Confirm all players use the same game version + same client patch package.
 5. Confirm public IP/DNS in `server.cfg` (`ADDR`) is reachable from outside your LAN.

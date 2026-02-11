@@ -13,6 +13,7 @@
 #include <optional>
 #include <exception>
 #include <cctype>
+#include <cwctype>
 #include <limits>
 #include <iomanip>
 #include <cstdio>
@@ -71,7 +72,16 @@ struct WorkerResolvedSettings
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-10-ug2diag-5";
+constexpr const char* kBuildTag = "2026-02-11-ug2diag-6";
+constexpr size_t kUg2LanBeaconLength = 0x180;
+constexpr size_t kUg2IdentOffset = 0x08;
+constexpr size_t kUg2IdentMax = 0x08;
+constexpr size_t kUg2NameOffset = 0x28;
+constexpr size_t kUg2NameMax = 0x20;
+constexpr size_t kUg2StatsOffset = 0x48;
+constexpr size_t kUg2StatsMax = 0xC0;
+constexpr char kUg2ExpectedIdent[] = "NFSU2NA";
+constexpr char kUg2StockName[] = "NAME";
 
 std::atomic<bool> gLanBridgeRunning{ false };
 std::thread gLanBridgeThread;
@@ -84,6 +94,10 @@ std::atomic<bool> gLanDiagEnabled{ false };
 std::atomic<int> gLanDiagBeaconLogCount{ 0 };
 std::atomic<bool> gSameMachineModeEnabled{ false };
 std::atomic<bool> gLoopbackMirrorAnnounced{ false };
+std::string gPreferredServerName;
+int gConfiguredServerPort = 9900;
+HANDLE gServerIdentityMutex = nullptr;
+std::wstring gServerIdentityMutexName;
 
 bool LooksLikeUg2LanBeacon(const char* payload, int length);
 
@@ -157,6 +171,110 @@ bool TryParseIntRange(const std::string& input, int minValue, int maxValue, int*
     *valueOut = parsed;
     return true;
 }
+
+std::wstring AsciiToWide(const std::string& input)
+{
+    if (input.empty())
+    {
+        return {};
+    }
+
+    std::wstring output;
+    output.reserve(input.size());
+    for (unsigned char ch : input)
+    {
+        output.push_back(static_cast<wchar_t>(ch));
+    }
+    return output;
+}
+
+std::wstring NormalizeIdentityTokenForMutex(const std::wstring& input)
+{
+    std::wstring out;
+    out.reserve(input.size());
+
+    for (const wchar_t ch : input)
+    {
+        if ((ch >= L'0' && ch <= L'9')
+            || (ch >= L'A' && ch <= L'Z')
+            || (ch >= L'a' && ch <= L'z')
+            || ch == L'_' || ch == L'-' || ch == L'.')
+        {
+            out.push_back(static_cast<wchar_t>(towupper(ch)));
+        }
+        else
+        {
+            out.push_back(L'_');
+        }
+    }
+
+    if (out.empty())
+    {
+        return L"UNKNOWN";
+    }
+    return out;
+}
+
+std::wstring BuildServerIdentityMutexName(const std::string& lobbyIdent, int port)
+{
+    return L"Local\\NFSLAN_SERVER_IDENT_"
+        + NormalizeIdentityTokenForMutex(AsciiToWide(TrimAscii(lobbyIdent)))
+        + L"_"
+        + std::to_wstring(port);
+}
+
+void ReleaseServerIdentityLock()
+{
+    if (!gServerIdentityMutex)
+    {
+        return;
+    }
+
+    CloseHandle(gServerIdentityMutex);
+    gServerIdentityMutex = nullptr;
+    gServerIdentityMutexName.clear();
+}
+
+bool AcquireServerIdentityLock(const std::string& lobbyIdent, int port)
+{
+    ReleaseServerIdentityLock();
+
+    gServerIdentityMutexName = BuildServerIdentityMutexName(lobbyIdent, port);
+    HANDLE mutexHandle = CreateMutexW(nullptr, FALSE, gServerIdentityMutexName.c_str());
+    if (!mutexHandle)
+    {
+        std::cerr << "ERROR: Failed to create server identity mutex (Win32 " << GetLastError() << ").\n";
+        gServerIdentityMutexName.clear();
+        return false;
+    }
+
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        std::cerr << "ERROR: Another NFSLAN server instance with identity "
+                  << TrimAscii(lobbyIdent) << ":" << port
+                  << " is already running on this machine.\n";
+        CloseHandle(mutexHandle);
+        gServerIdentityMutexName.clear();
+        return false;
+    }
+
+    gServerIdentityMutex = mutexHandle;
+    std::cout << "NFSLAN: Identity lock acquired for " << TrimAscii(lobbyIdent) << ":" << port << ".\n";
+    return true;
+}
+
+struct ScopedServerIdentityLock
+{
+    bool armed = false;
+
+    ~ScopedServerIdentityLock()
+    {
+        if (armed)
+        {
+            ReleaseServerIdentityLock();
+        }
+    }
+};
 
 bool ParseConfigLine(const std::string& line, std::string* keyOut, std::string* valueOut)
 {
@@ -265,6 +383,45 @@ bool WriteTextFile(const std::filesystem::path& path, const std::string& text)
 
     file.write(text.data(), static_cast<std::streamsize>(text.size()));
     return file.good();
+}
+
+bool ResolveServerIdentityFromConfig(bool underground2Server, std::string* lobbyIdentOut, int* portOut)
+{
+    std::string lobbyIdent = underground2Server ? "NFSU2NA" : "NFSMWNA";
+    int port = 9900;
+
+    std::string configText;
+    if (!ReadTextFile("server.cfg", &configText))
+    {
+        *lobbyIdentOut = lobbyIdent;
+        *portOut = port;
+        return true;
+    }
+
+    const std::string configuredLobby = TrimAscii(GetConfigValue(configText, "LOBBY_IDENT").value_or(""));
+    if (!configuredLobby.empty())
+    {
+        lobbyIdent = configuredLobby;
+    }
+
+    const std::string configuredPort = TrimAscii(GetConfigValue(configText, "PORT").value_or(""));
+    int parsedPort = 0;
+    if (!configuredPort.empty())
+    {
+        if (TryParseIntRange(configuredPort, 1, 65535, &parsedPort))
+        {
+            port = parsedPort;
+        }
+        else
+        {
+            std::cout << "NFSLAN: WARNING - invalid PORT='" << configuredPort
+                      << "' in server.cfg, using default 9900 for identity lock.\n";
+        }
+    }
+
+    *lobbyIdentOut = TrimAscii(lobbyIdent);
+    *portOut = port;
+    return true;
 }
 
 bool IsTruthy(const std::string& value)
@@ -481,14 +638,205 @@ std::string FindPrintableString(const char* payload, int length, size_t start, s
 
 std::string ExtractUg2BeaconStats(const char* payload, int length)
 {
-    constexpr size_t statsOffset = 0x48;
-    constexpr size_t statsMax = 0xC0;
-    if (!payload || length <= 0 || static_cast<size_t>(length) <= statsOffset)
+    if (!payload || length <= 0 || static_cast<size_t>(length) <= kUg2StatsOffset)
     {
         return {};
     }
 
-    return ReadBeaconStringField(payload, length, statsOffset, statsMax);
+    return ReadBeaconStringField(payload, length, kUg2StatsOffset, kUg2StatsMax);
+}
+
+std::string ExtractUg2BeaconName(const char* payload, int length)
+{
+    std::string serverName = ReadBeaconStringField(payload, length, kUg2NameOffset, kUg2NameMax);
+    if (!serverName.empty())
+    {
+        return serverName;
+    }
+    return FindPrintableString(payload, length, 0x20, 0x80, 3);
+}
+
+bool WriteBeaconStringField(char* payload, int length, size_t offset, size_t maxLen, const std::string& value)
+{
+    if (!payload || length <= 0 || offset >= static_cast<size_t>(length) || maxLen == 0)
+    {
+        return false;
+    }
+
+    const size_t safeMaxLen = (std::min)(maxLen, static_cast<size_t>(length) - offset);
+    if (safeMaxLen <= 1)
+    {
+        return false;
+    }
+
+    const size_t copyLen = (std::min)(value.size(), safeMaxLen - 1);
+    const std::string desired = value.substr(0, copyLen);
+    const std::string existing = ReadBeaconStringField(payload, length, offset, safeMaxLen);
+    if (existing == desired)
+    {
+        return false;
+    }
+
+    std::memset(payload + offset, 0, safeMaxLen);
+    std::memcpy(payload + offset, desired.data(), desired.size());
+    return true;
+}
+
+std::string ToLowerAscii(std::string value)
+{
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](unsigned char ch)
+        {
+            return static_cast<char>(std::tolower(ch));
+        });
+    return value;
+}
+
+bool IsDefaultDedicatedServerName(const std::string& value)
+{
+    const std::string normalized = ToLowerAscii(TrimAscii(value));
+    if (normalized.empty())
+    {
+        return true;
+    }
+    if (normalized == "ug2 dedicated server"
+        || normalized == "u2 dedicated server"
+        || normalized == "mw dedicated server")
+    {
+        return true;
+    }
+    return normalized.find("dedicated server") != std::string::npos;
+}
+
+std::string ResolveNormalizedUg2BeaconName(const std::string& current)
+{
+    const std::string currentTrimmed = TrimAscii(current);
+    if (!currentTrimmed.empty() && !IsDefaultDedicatedServerName(currentTrimmed))
+    {
+        return currentTrimmed;
+    }
+
+    const std::string preferredTrimmed = TrimAscii(gPreferredServerName);
+    if (!preferredTrimmed.empty() && !IsDefaultDedicatedServerName(preferredTrimmed))
+    {
+        return preferredTrimmed;
+    }
+
+    return kUg2StockName;
+}
+
+std::string ResolveNormalizedUg2BeaconStats(const std::string& current)
+{
+    int port = gConfiguredServerPort;
+    if (port < 1 || port > 65535)
+    {
+        port = 9900;
+    }
+
+    int advertisedSlots = 1;
+    const std::string trimmed = TrimAscii(current);
+    if (!trimmed.empty())
+    {
+        const size_t firstPipe = trimmed.find('|');
+        std::string portToken = trimmed;
+        std::string slotsToken;
+
+        if (firstPipe != std::string::npos)
+        {
+            portToken = trimmed.substr(0, firstPipe);
+            slotsToken = trimmed.substr(firstPipe + 1);
+            const size_t secondPipe = slotsToken.find('|');
+            if (secondPipe != std::string::npos)
+            {
+                slotsToken = slotsToken.substr(0, secondPipe);
+            }
+        }
+
+        int parsedPort = 0;
+        if (TryParseIntRange(portToken, 1, 65535, &parsedPort))
+        {
+            port = parsedPort;
+        }
+
+        int parsedSlots = 0;
+        if (TryParseInt(slotsToken, &parsedSlots) && parsedSlots > 0)
+        {
+            advertisedSlots = parsedSlots;
+        }
+    }
+
+    return std::to_string(port) + "|" + std::to_string(advertisedSlots);
+}
+
+void LogUg2LanBeaconDiff(const char* sourceTag, const char* before, const char* after, int length)
+{
+    if (!gLanDiagEnabled.load() || !before || !after || length <= 0)
+    {
+        return;
+    }
+
+    const std::string beforeIdent = ReadBeaconStringField(before, length, kUg2IdentOffset, kUg2IdentMax);
+    const std::string afterIdent = ReadBeaconStringField(after, length, kUg2IdentOffset, kUg2IdentMax);
+    const std::string beforeStats = ReadBeaconStringField(before, length, kUg2StatsOffset, kUg2StatsMax);
+    const std::string afterStats = ReadBeaconStringField(after, length, kUg2StatsOffset, kUg2StatsMax);
+    const std::string beforeName = ExtractUg2BeaconName(before, length);
+    const std::string afterName = ExtractUg2BeaconName(after, length);
+
+    bool loggedFieldDiff = false;
+    std::ostringstream fieldDiff;
+    fieldDiff << "NFSLAN: LAN-DIAG " << sourceTag << " field-diff";
+    if (beforeIdent != afterIdent)
+    {
+        fieldDiff << " ident:'" << beforeIdent << "'->'" << afterIdent << "'";
+        loggedFieldDiff = true;
+    }
+    if (beforeStats != afterStats)
+    {
+        fieldDiff << " stats:'" << beforeStats << "'->'" << afterStats << "'";
+        loggedFieldDiff = true;
+    }
+    if (beforeName != afterName)
+    {
+        fieldDiff << " name:'" << beforeName << "'->'" << afterName << "'";
+        loggedFieldDiff = true;
+    }
+
+    if (loggedFieldDiff)
+    {
+        std::cout << fieldDiff.str() << '\n';
+    }
+
+    std::ostringstream byteDiff;
+    byteDiff << "NFSLAN: LAN-DIAG " << sourceTag << " byte-diff offsets:";
+    bool anyByteDiff = false;
+    int shown = 0;
+    const size_t maxLen = (std::min)(static_cast<size_t>(length), kUg2LanBeaconLength);
+    for (size_t i = 0; i < maxLen; ++i)
+    {
+        if (before[i] == after[i])
+        {
+            continue;
+        }
+
+        anyByteDiff = true;
+        if (shown < 16)
+        {
+            byteDiff << " 0x" << std::hex << std::setw(2) << std::setfill('0') << i << std::dec;
+            ++shown;
+        }
+    }
+
+    if (anyByteDiff)
+    {
+        if (shown >= 16)
+        {
+            byteDiff << " ...";
+        }
+        std::cout << byteDiff.str() << '\n';
+    }
 }
 
 std::string HexPreview(const char* payload, int length, size_t bytesToShow)
@@ -530,14 +878,9 @@ void LogUg2LanBeaconDiag(const char* sourceTag, const char* payload, int length,
         return;
     }
 
-    const std::string ident(payload + 8, payload + 15);
-    std::string serverName = ReadBeaconStringField(payload, length, 0x28, 0x20);
-    if (serverName.empty())
-    {
-        serverName = FindPrintableString(payload, length, 0x20, 0x80, 3);
-    }
-
-    const std::string stats = ExtractUg2BeaconStats(payload, length);
+    const std::string ident = ReadBeaconStringField(payload, length, kUg2IdentOffset, kUg2IdentMax);
+    const std::string serverName = ExtractUg2BeaconName(payload, length);
+    const std::string stats = ReadBeaconStringField(payload, length, kUg2StatsOffset, kUg2StatsMax);
     const std::string preview = HexPreview(payload, length, 64);
 
     std::cout << "NFSLAN: LAN-DIAG " << sourceTag
@@ -590,7 +933,7 @@ void MirrorUg2BeaconToLoopback(SOCKET socketHandle, const char* payload, int len
 
 bool LooksLikeUg2LanBeacon(const char* payload, int length)
 {
-    if (!payload || length != 0x180)
+    if (!payload || static_cast<size_t>(length) != kUg2LanBeaconLength)
     {
         return false;
     }
@@ -605,52 +948,36 @@ bool LooksLikeUg2LanBeacon(const char* payload, int length)
         return false;
     }
 
-    return std::memcmp(payload + 8, "NFSU2NA", 7) == 0;
+    return std::memcmp(payload + kUg2IdentOffset, "NFSU", 4) == 0;
 }
 
-bool PatchUg2LanBeaconCount(char* payload, int length)
+bool NormalizeUg2LanBeacon(char* payload, int length)
 {
     if (!LooksLikeUg2LanBeacon(payload, length))
     {
         return false;
     }
 
-    constexpr size_t statsOffset = 0x48;
-    constexpr size_t statsMax = 0xC0;
-    size_t statsLen = 0;
-    while (statsLen < statsMax && payload[statsOffset + statsLen] != '\0')
+    bool changed = false;
+
+    const std::string ident = ReadBeaconStringField(payload, length, kUg2IdentOffset, kUg2IdentMax);
+    if (!EqualsIgnoreCase(ident, kUg2ExpectedIdent))
     {
-        ++statsLen;
+        changed = WriteBeaconStringField(payload, length, kUg2IdentOffset, kUg2IdentMax, kUg2ExpectedIdent) || changed;
     }
 
-    if (statsLen == 0 || statsLen >= statsMax)
+    const std::string normalizedName = ResolveNormalizedUg2BeaconName(
+        ReadBeaconStringField(payload, length, kUg2NameOffset, kUg2NameMax));
+    if (!normalizedName.empty())
     {
-        return false;
+        changed = WriteBeaconStringField(payload, length, kUg2NameOffset, kUg2NameMax, normalizedName) || changed;
     }
 
-    std::string stats(payload + statsOffset, payload + statsOffset + statsLen);
-    const size_t pipePos = stats.find('|');
-    if (pipePos == std::string::npos)
-    {
-        return false;
-    }
+    const std::string currentStats = ReadBeaconStringField(payload, length, kUg2StatsOffset, kUg2StatsMax);
+    const std::string normalizedStats = ResolveNormalizedUg2BeaconStats(currentStats);
+    changed = WriteBeaconStringField(payload, length, kUg2StatsOffset, kUg2StatsMax, normalizedStats) || changed;
 
-    const std::string before = stats.substr(0, pipePos);
-    const std::string after = stats.substr(pipePos + 1);
-    if (after != "0")
-    {
-        return false;
-    }
-
-    const std::string patchedStats = before + "|1";
-    if (patchedStats.size() >= statsMax)
-    {
-        return false;
-    }
-
-    std::memset(payload + statsOffset, 0, statsMax);
-    std::memcpy(payload + statsOffset, patchedStats.c_str(), patchedStats.size());
-    return true;
+    return changed;
 }
 
 int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const sockaddr* to, int tolen)
@@ -662,23 +989,26 @@ int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const soc
 
     if (LooksLikeUg2LanBeacon(buf, len))
     {
-        if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 8))
+        const bool logOriginalSample = ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 8);
+        if (logOriginalSample)
         {
             LogUg2LanBeaconDiag("hook-send-original", buf, len, false);
         }
 
-        std::array<char, 0x180> patched{};
+        std::array<char, kUg2LanBeaconLength> patched{};
         std::memcpy(patched.data(), buf, patched.size());
-        if (PatchUg2LanBeaconCount(patched.data(), len))
+        if (NormalizeUg2LanBeacon(patched.data(), len))
         {
             const int patchIndex = ++gUg2BeaconPatchedCount;
             if (patchIndex <= 3)
             {
-                std::cout << "NFSLAN: Patched UG2 LAN beacon stats to advertise at least one slot.\n";
+                std::cout << "NFSLAN: Normalized UG2 LAN beacon fields for compatibility.\n";
             }
 
-            if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 8))
+            const bool logPatchedSample = ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 10);
+            if (logPatchedSample)
             {
+                LogUg2LanBeaconDiff("hook-send", buf, patched.data(), static_cast<int>(patched.size()));
                 LogUg2LanBeaconDiag("hook-send-patched", patched.data(), static_cast<int>(patched.size()), true);
             }
 
@@ -847,9 +1177,9 @@ bool IsLanDiscoveryPacket(const char* data, int length)
     return data && length >= 9 && data[0] == 'g' && data[1] == 'E' && data[2] == 'A';
 }
 
-std::array<char, 0x180> BuildLanDiscoveryQueryPacket()
+std::array<char, kUg2LanBeaconLength> BuildLanDiscoveryQueryPacket()
 {
-    std::array<char, 0x180> packet{};
+    std::array<char, kUg2LanBeaconLength> packet{};
     packet[0] = 'g';
     packet[1] = 'E';
     packet[2] = 'A';
@@ -929,7 +1259,7 @@ void RunLanDiscoveryLoopbackBridge()
             bool forwardedAny = false;
             for (int i = 0; i < 8; ++i)
             {
-                std::array<char, 0x180> response{};
+                std::array<char, kUg2LanBeaconLength> response{};
                 sockaddr_in from{};
                 int fromLen = sizeof(from);
                 const int received = recvfrom(
@@ -955,13 +1285,25 @@ void RunLanDiscoveryLoopbackBridge()
                     continue;
                 }
 
-                if (PatchUg2LanBeaconCount(response.data(), received))
+                std::array<char, kUg2LanBeaconLength> originalResponse{};
+                const bool capturedOriginal = static_cast<size_t>(received) <= originalResponse.size();
+                if (capturedOriginal)
+                {
+                    std::memcpy(originalResponse.data(), response.data(), static_cast<size_t>(received));
+                }
+
+                if (NormalizeUg2LanBeacon(response.data(), received))
                 {
                     const int patchIndex = ++gUg2BeaconPatchedCount;
                     if (patchIndex <= 3 || !loggedBridgePatch)
                     {
                         loggedBridgePatch = true;
-                        std::cout << "NFSLAN: Patched UG2 LAN beacon stats in LAN bridge response.\n";
+                        std::cout << "NFSLAN: Normalized UG2 LAN beacon in LAN bridge response.\n";
+                    }
+
+                    if (capturedOriginal && ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 40))
+                    {
+                        LogUg2LanBeaconDiff("bridge-forward", originalResponse.data(), response.data(), received);
                     }
                 }
 
@@ -1806,7 +2148,7 @@ bool bIsUnderground2Server(uintptr_t base)
 void SigInterruptHandler(int signum)
 {
     StopLanDiscoveryLoopbackBridge();
-    if (IsServerRunning())
+    if (IsServerRunning && StopServer && IsServerRunning())
     {
         std::cout << "NFSLAN: Stopping server...\n";
         StopServer();
@@ -1815,6 +2157,8 @@ void SigInterruptHandler(int signum)
     {
         std::cout << "NFSLAN: WARNING - server was NOT running during interrupt!\n";
     }
+    ReleaseServerIdentityLock();
+    gSameMachineModeEnabled.store(false);
     exit(signum);
 }
 
@@ -1876,11 +2220,28 @@ int NFSLANWorkerMain(int argc, char* argv[])
     const bool underground2Server = bIsUnderground2Server((uintptr_t)serverdll);
     WorkerResolvedSettings resolved{};
     bool sendToHookInstalled = false;
+    ScopedServerIdentityLock identityLock;
 
     if (!ApplyServerConfigCompatibility(options, underground2Server, &resolved))
     {
         return -1;
     }
+
+    gPreferredServerName = TrimAscii(options.serverName);
+    if (gPreferredServerName.empty())
+    {
+        gPreferredServerName = underground2Server ? "UG2 Dedicated Server" : "MW Dedicated Server";
+    }
+
+    std::string identityLobby;
+    int identityPort = 9900;
+    ResolveServerIdentityFromConfig(underground2Server, &identityLobby, &identityPort);
+    gConfiguredServerPort = identityPort;
+    if (!AcquireServerIdentityLock(identityLobby, identityPort))
+    {
+        return -1;
+    }
+    identityLock.armed = true;
 
     gLanDiagEnabled.store(resolved.lanDiag);
     gLanDiagBeaconLogCount.store(0);
