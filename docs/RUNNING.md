@@ -77,3 +77,31 @@ Before launch, native UI now performs profile-aware `server.cfg` validation and 
 
 - GUI stop terminates worker process.
 - If worker does not exit cleanly, process is force-terminated.
+
+## Relay app (`NFSLAN-Relay`)
+
+Use relay when clients/servers are on different subnets and game LAN discovery broadcast (`UDP 9999`) does not cross routing boundaries.
+
+### When to use
+
+- Cross-subnet LAN with routers/firewalls between players
+- VPN-linked sites where broadcast does not traverse as expected
+- Internet tests where you want explicit discovery forwarding behavior
+
+### Start relay
+
+1. Open `NFSLAN-Relay.exe`.
+2. Choose mode:
+   - `Transparent spoof (VPN/LAN, admin)`: forwards with original source IP (closest to legacy relay behavior).
+   - `Fixed source spoof (-e style, admin)`: forwards with manually configured source IPv4.
+   - `No spoof (compat mode, no admin)`: normal UDP forward without raw packet spoofing.
+3. Set `Listen UDP port` (default `9999`) and `Target UDP port` (default `9999`).
+4. Enter peer IPv4 addresses (one per line).
+5. If using fixed-source mode, provide `Fixed source IPv4`.
+6. Click `Start Relay`.
+
+### Notes
+
+- Spoof modes require running the app as Administrator on Windows because raw sockets + `IP_HDRINCL` are used.
+- Relay only handles discovery forwarding. Once players discover each other, game traffic still depends on normal host/client connectivity and required forwarded ports.
+- Start with `No spoof` mode for first diagnostics, then move to spoof mode if discovery still fails.

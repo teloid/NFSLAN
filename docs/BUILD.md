@@ -72,6 +72,23 @@ Expected output:
 
 - Single launcher: `build-win32-single/native_win32/Release/NFSLAN-GUI.exe`
 
+### Native relay app (x64 or x86)
+
+No Qt required. This target does not require `server.dll`.
+
+```powershell
+cmake -S . -B build-relay -G "Visual Studio 17 2022" -A x64 `
+  -DNFSLAN_BUILD_RELAY_WIN32_GUI=ON `
+  -DNFSLAN_BUILD_NATIVE_WIN32_GUI=OFF `
+  -DNFSLAN_BUILD_GUI=OFF `
+  -DNFSLAN_BUILD_WORKER=OFF
+cmake --build build-relay --config Release
+```
+
+Expected output:
+
+- Relay GUI: `build-relay/native_win32/Release/NFSLAN-Relay.exe`
+
 ## Build Qt launcher (optional)
 
 If you still want the Qt launcher path, provide Qt in `CMAKE_PREFIX_PATH` and enable `NFSLAN_BUILD_GUI=ON`.
@@ -102,5 +119,6 @@ Expected output:
 
 - Disable Qt launcher: `-DNFSLAN_BUILD_GUI=OFF`
 - Disable native Win32 launcher: `-DNFSLAN_BUILD_NATIVE_WIN32_GUI=OFF`
+- Disable relay GUI: `-DNFSLAN_BUILD_RELAY_WIN32_GUI=OFF`
 - Disable worker target: `-DNFSLAN_BUILD_WORKER=OFF`
 - Disable embedding: `-DNFSLAN_EMBED_WORKER_IN_GUI=OFF`

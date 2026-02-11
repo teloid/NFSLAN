@@ -10,6 +10,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 ## What is included
 
 - Native Win32 launcher (`NFSLAN-GUI`) with integrated `server.cfg` editor (no Qt runtime dependency)
+- Native Win32 relay app (`NFSLAN-Relay`) for cross-subnet/cross-site LAN discovery forwarding (UG2/MW style UDP `9999` broadcast relay)
 - Native Win32 launcher includes explicit `FORCE_LOCAL` and `ENABLE_GAME_ADDR_FIXUPS` toggles for same-machine host+client scenarios
 - Native Win32 launcher includes `U2_START_MODE` (`0..13`) and `LAN_DIAG` controls with profile-aware preflight validation before launch
 - Native Win32 launcher logs build tag, executable path, worker launch mode, and effective profile/runtime paths at startup
@@ -37,6 +38,7 @@ Native Linux loading of this `server.dll` is not available in this project becau
 1. Build on Windows:
    - native Win32 GUI in x64 (external worker mode), or
    - native single EXE in Win32/x86 (embedded worker mode).
+   - optional relay app (`NFSLAN-Relay`) for LAN discovery forwarding across subnets/VPN/internet.
 2. Place game `server.dll` and `server.cfg` in a server folder.
 3. Open `NFSLAN-GUI`, choose game profile, set server name/path, and start.
 4. If host and client run on the same PC, enable `FORCE_LOCAL` and keep `ENABLE_GAME_ADDR_FIXUPS` enabled.
