@@ -29,7 +29,7 @@ namespace
 {
 
 constexpr wchar_t kWindowClassName[] = L"NFSLANRelayWindowClass";
-constexpr wchar_t kBuildTag[] = L"2026-02-11-relay-ui-2";
+constexpr wchar_t kBuildTag[] = L"2026-02-11-relay-ui-3";
 
 constexpr UINT WM_APP_RELAY_LOG = WM_APP + 20;
 constexpr UINT WM_APP_RELAY_STATUS = WM_APP + 21;
@@ -42,7 +42,7 @@ constexpr size_t kBeaconFieldNameOffset = 0x28;
 constexpr size_t kBeaconFieldNameMax = 0x20;
 constexpr size_t kBeaconFieldStatsOffset = 0x48;
 constexpr size_t kBeaconFieldStatsMax = 0xC0;
-constexpr size_t kBeaconFieldTransportOffset = 0x130;
+constexpr size_t kBeaconFieldTransportOffset = 0x108;
 constexpr size_t kBeaconFieldTransportMax = 0x40;
 
 enum ControlId : int
@@ -448,6 +448,37 @@ bool looksLikeLanDiscoveryPayload(const std::vector<uint8_t>& payload)
     return true;
 }
 
+bool isLoopbackIpv4(uint32_t addressNetworkOrder)
+{
+    const uint32_t host = ntohl(addressNetworkOrder);
+    return ((host >> 24) & 0xFFu) == 127u;
+}
+
+int scoreBeaconSample(const BeaconSample& sample, uint16_t listenPort)
+{
+    int score = 0;
+    if (!isLoopbackIpv4(sample.sourceIp))
+    {
+        score += 100;
+    }
+    if (sample.sourcePort == listenPort)
+    {
+        score += 20;
+    }
+    if (sample.payload.size() == 384)
+    {
+        score += 5;
+    }
+
+    const std::string ident = readPrintableField(sample.payload, kBeaconFieldIdentOffset, kBeaconFieldIdentMax);
+    if (ident == "NFSU2NA" || ident == "NFSMWNA")
+    {
+        score += 10;
+    }
+
+    return score;
+}
+
 bool pickPrimaryIpv4Address(uint32_t* addressOut)
 {
     char hostname[256] = {};
@@ -679,7 +710,7 @@ std::wstring buildBeaconDiffReport(const BeaconSample& inGame, const BeaconSampl
     report << buildFieldDiffLine(L"ident@0x008", inIdent, stIdent) << L"\n";
     report << buildFieldDiffLine(L"name@0x028", inName, stName) << L"\n";
     report << buildFieldDiffLine(L"stats@0x048", inStats, stStats) << L"\n";
-    report << buildFieldDiffLine(L"transport@0x130", inTransport, stTransport) << L"\n\n";
+    report << buildFieldDiffLine(L"transport@0x108", inTransport, stTransport) << L"\n\n";
 
     const size_t commonLength = (std::min)(inGame.payload.size(), standalone.payload.size());
     std::vector<size_t> diffOffsets;
@@ -1347,6 +1378,10 @@ void runCaptureWorker(CaptureTarget target, uint16_t listenPort)
     auto captureViaUdpBoundSocket = [&](SOCKET socketHandle) -> bool
     {
         std::vector<uint8_t> buffer(2048);
+        bool haveSample = false;
+        BeaconSample bestSample;
+        int bestScore = -1;
+
         while (!g_app.capture.stopRequested.load() && std::chrono::steady_clock::now() < deadline)
         {
             sockaddr_in from{};
@@ -1369,12 +1404,31 @@ void runCaptureWorker(CaptureTarget target, uint16_t listenPort)
                 continue;
             }
 
+            BeaconSample candidate;
+            candidate.payload = std::move(payload);
+            candidate.sourceIp = from.sin_addr.s_addr;
+            candidate.sourcePort = ntohs(from.sin_port);
+            candidate.capturedAt = nowTimestamp();
+            const int candidateScore = scoreBeaconSample(candidate, listenPort);
+            if (!haveSample || candidateScore > bestScore)
+            {
+                bestSample = std::move(candidate);
+                bestScore = candidateScore;
+                haveSample = true;
+            }
+
+            if (haveSample && bestScore >= 120)
+            {
+                break;
+            }
+        }
+
+        if (haveSample)
+        {
             result->success = true;
-            result->sample.payload = std::move(payload);
-            result->sample.sourceIp = from.sin_addr.s_addr;
-            result->sample.sourcePort = ntohs(from.sin_port);
-            result->sample.capturedAt = nowTimestamp();
+            result->sample = std::move(bestSample);
             fillSuccessMessage();
+            result->info += L" (selected best packet score=" + std::to_wstring(bestScore) + L")";
             return true;
         }
         return false;
@@ -1441,6 +1495,8 @@ void runCaptureWorker(CaptureTarget target, uint16_t listenPort)
         }
 
         bool captured = false;
+        BeaconSample bestSample;
+        int bestScore = -1;
         std::vector<uint8_t> frameBuffer(65536);
         while (!g_app.capture.stopRequested.load() && std::chrono::steady_clock::now() < deadline)
         {
@@ -1456,15 +1512,28 @@ void runCaptureWorker(CaptureTarget target, uint16_t listenPort)
                 continue;
             }
 
-            result->success = true;
-            result->sample = std::move(sample);
-            fillSuccessMessage();
-            result->info += L" (raw fallback mode)";
-            captured = true;
-            break;
+            const int candidateScore = scoreBeaconSample(sample, listenPort);
+            if (!captured || candidateScore > bestScore)
+            {
+                bestSample = std::move(sample);
+                bestScore = candidateScore;
+                captured = true;
+            }
+
+            if (captured && bestScore >= 120)
+            {
+                break;
+            }
         }
 
-        if (!captured && !g_app.capture.stopRequested.load())
+        if (captured)
+        {
+            result->success = true;
+            result->sample = std::move(bestSample);
+            fillSuccessMessage();
+            result->info += L" (raw fallback mode, selected best packet score=" + std::to_wstring(bestScore) + L")";
+        }
+        else if (!g_app.capture.stopRequested.load())
         {
             result->info =
                 L"Raw fallback capture timed out after "

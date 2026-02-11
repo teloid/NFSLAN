@@ -72,7 +72,7 @@ struct WorkerResolvedSettings
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-11-ug2diag-6";
+constexpr const char* kBuildTag = "2026-02-11-ug2diag-7";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -736,7 +736,7 @@ std::string ResolveNormalizedUg2BeaconStats(const std::string& current)
         port = 9900;
     }
 
-    int advertisedSlots = 1;
+    int advertisedSlots = 0;
     const std::string trimmed = TrimAscii(current);
     if (!trimmed.empty())
     {
@@ -762,7 +762,7 @@ std::string ResolveNormalizedUg2BeaconStats(const std::string& current)
         }
 
         int parsedSlots = 0;
-        if (TryParseInt(slotsToken, &parsedSlots) && parsedSlots > 0)
+        if (TryParseInt(slotsToken, &parsedSlots) && parsedSlots >= 0)
         {
             advertisedSlots = parsedSlots;
         }
