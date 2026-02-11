@@ -11,10 +11,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <cstdint>
 #include <cwctype>
+#include <fstream>
+#include <iomanip>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -25,11 +28,21 @@ namespace
 {
 
 constexpr wchar_t kWindowClassName[] = L"NFSLANRelayWindowClass";
-constexpr wchar_t kBuildTag[] = L"2026-02-11-relay-ui-1";
+constexpr wchar_t kBuildTag[] = L"2026-02-11-relay-ui-2";
 
 constexpr UINT WM_APP_RELAY_LOG = WM_APP + 20;
 constexpr UINT WM_APP_RELAY_STATUS = WM_APP + 21;
 constexpr UINT WM_APP_RELAY_STOPPED = WM_APP + 22;
+constexpr UINT WM_APP_CAPTURE_DONE = WM_APP + 23;
+constexpr int kDefaultCaptureTimeoutMs = 12000;
+constexpr size_t kBeaconFieldIdentOffset = 0x08;
+constexpr size_t kBeaconFieldIdentMax = 0x08;
+constexpr size_t kBeaconFieldNameOffset = 0x28;
+constexpr size_t kBeaconFieldNameMax = 0x20;
+constexpr size_t kBeaconFieldStatsOffset = 0x48;
+constexpr size_t kBeaconFieldStatsMax = 0xC0;
+constexpr size_t kBeaconFieldTransportOffset = 0x130;
+constexpr size_t kBeaconFieldTransportMax = 0x40;
 
 enum ControlId : int
 {
@@ -41,8 +54,15 @@ enum ControlId : int
     kIdStartButton,
     kIdStopButton,
     kIdClearLogButton,
+    kIdCaptureInGameButton,
+    kIdCaptureStandaloneButton,
+    kIdGenerateDiffButton,
+    kIdCopyDiffButton,
+    kIdSaveDiffButton,
+    kIdResetSamplesButton,
     kIdLogEdit,
-    kIdStatusStatic
+    kIdStatusStatic,
+    kIdCaptureStatusStatic
 };
 
 enum class RelayMode
@@ -68,6 +88,35 @@ struct RelayRuntime
     std::thread worker;
 };
 
+enum class CaptureTarget
+{
+    InGame,
+    Standalone
+};
+
+struct CaptureRuntime
+{
+    std::atomic<bool> running{ false };
+    std::atomic<bool> stopRequested{ false };
+    std::thread worker;
+};
+
+struct BeaconSample
+{
+    std::vector<uint8_t> payload;
+    uint32_t sourceIp = 0;
+    uint16_t sourcePort = 0;
+    std::wstring capturedAt;
+};
+
+struct CaptureResultMessage
+{
+    CaptureTarget target = CaptureTarget::InGame;
+    bool success = false;
+    std::wstring info;
+    BeaconSample sample;
+};
+
 struct AppState
 {
     HWND window = nullptr;
@@ -79,12 +128,25 @@ struct AppState
     HWND startButton = nullptr;
     HWND stopButton = nullptr;
     HWND clearLogButton = nullptr;
+    HWND captureInGameButton = nullptr;
+    HWND captureStandaloneButton = nullptr;
+    HWND generateDiffButton = nullptr;
+    HWND copyDiffButton = nullptr;
+    HWND saveDiffButton = nullptr;
+    HWND resetSamplesButton = nullptr;
     HWND logEdit = nullptr;
     HWND statusStatic = nullptr;
+    HWND captureStatusStatic = nullptr;
     RelayRuntime runtime;
+    CaptureRuntime capture;
+    std::optional<BeaconSample> inGameSample;
+    std::optional<BeaconSample> standaloneSample;
+    std::wstring lastDiffReport;
 };
 
 AppState g_app;
+
+void showValidationError(const std::wstring& message);
 
 #pragma pack(push, 1)
 struct Ipv4Header
@@ -302,14 +364,303 @@ void refreshModeDependentUi()
 
 void setUiRunningState(bool running)
 {
+    const bool capturing = g_app.capture.running.load();
+
     EnableWindow(g_app.modeCombo, running ? FALSE : TRUE);
     EnableWindow(g_app.listenPortEdit, running ? FALSE : TRUE);
     EnableWindow(g_app.targetPortEdit, running ? FALSE : TRUE);
     EnableWindow(g_app.peersEdit, running ? FALSE : TRUE);
     EnableWindow(g_app.fixedSourceEdit, (!running && currentRelayMode() == RelayMode::FixedSourceSpoof) ? TRUE : FALSE);
 
-    EnableWindow(g_app.startButton, running ? FALSE : TRUE);
-    EnableWindow(g_app.stopButton, running ? TRUE : FALSE);
+    EnableWindow(g_app.startButton, (running || capturing) ? FALSE : TRUE);
+    EnableWindow(g_app.stopButton, (running || capturing) ? TRUE : FALSE);
+    EnableWindow(g_app.captureInGameButton, (running || capturing) ? FALSE : TRUE);
+    EnableWindow(g_app.captureStandaloneButton, (running || capturing) ? FALSE : TRUE);
+    EnableWindow(g_app.generateDiffButton, (running || capturing) ? FALSE : TRUE);
+    EnableWindow(g_app.resetSamplesButton, (running || capturing) ? FALSE : TRUE);
+    EnableWindow(g_app.copyDiffButton, (capturing || g_app.lastDiffReport.empty()) ? FALSE : TRUE);
+    EnableWindow(g_app.saveDiffButton, (capturing || g_app.lastDiffReport.empty()) ? FALSE : TRUE);
+}
+
+char printableAsciiByte(uint8_t b)
+{
+    return (b >= 32 && b <= 126) ? static_cast<char>(b) : '.';
+}
+
+std::wstring wideFromAscii(const std::string& text)
+{
+    std::wstring out;
+    out.reserve(text.size());
+    for (unsigned char ch : text)
+    {
+        out.push_back(static_cast<wchar_t>(ch));
+    }
+    return out;
+}
+
+std::string readPrintableField(const std::vector<uint8_t>& payload, size_t offset, size_t maxLen)
+{
+    if (offset >= payload.size() || maxLen == 0)
+    {
+        return {};
+    }
+
+    const size_t limit = (std::min)(payload.size(), offset + maxLen);
+    std::string out;
+    out.reserve(limit - offset);
+    for (size_t i = offset; i < limit; ++i)
+    {
+        const char ch = static_cast<char>(payload[i]);
+        if (ch == '\0')
+        {
+            break;
+        }
+        if (static_cast<unsigned char>(ch) < 32 || static_cast<unsigned char>(ch) > 126)
+        {
+            break;
+        }
+        out.push_back(ch);
+    }
+    return out;
+}
+
+bool looksLikeLanDiscoveryPayload(const std::vector<uint8_t>& payload)
+{
+    if (payload.size() < 9)
+    {
+        return false;
+    }
+    if (!(payload[0] == static_cast<uint8_t>('g')
+        && payload[1] == static_cast<uint8_t>('E')
+        && payload[2] == static_cast<uint8_t>('A')))
+    {
+        return false;
+    }
+    if (payload[3] != static_cast<uint8_t>(0x03))
+    {
+        return false;
+    }
+    if (payload[8] == static_cast<uint8_t>('?'))
+    {
+        return false;
+    }
+    return true;
+}
+
+std::wstring formatSampleSummary(const std::optional<BeaconSample>& sample)
+{
+    if (!sample.has_value())
+    {
+        return L"<missing>";
+    }
+
+    std::wostringstream stream;
+    stream << L"src=" << formatIpv4Address(sample->sourceIp)
+           << L":" << sample->sourcePort
+           << L", bytes=" << sample->payload.size()
+           << L", at=" << sample->capturedAt;
+    return stream.str();
+}
+
+std::wstring formatSampleSummary(const BeaconSample& sample)
+{
+    std::wostringstream stream;
+    stream << L"src=" << formatIpv4Address(sample.sourceIp)
+           << L":" << sample.sourcePort
+           << L", bytes=" << sample.payload.size()
+           << L", at=" << sample.capturedAt;
+    return stream.str();
+}
+
+void updateCaptureStatusLabel()
+{
+    if (!g_app.captureStatusStatic)
+    {
+        return;
+    }
+
+    std::wstring status = L"In-game: " + formatSampleSummary(g_app.inGameSample)
+        + L" | Standalone: " + formatSampleSummary(g_app.standaloneSample);
+    setWindowTextString(g_app.captureStatusStatic, status);
+}
+
+std::wstring buildHexDump(const std::vector<uint8_t>& payload)
+{
+    std::wostringstream stream;
+    stream << std::hex << std::setfill(L'0');
+
+    for (size_t offset = 0; offset < payload.size(); offset += 16)
+    {
+        stream << L"0x" << std::setw(3) << offset << L": ";
+
+        std::array<char, 16> ascii{};
+        ascii.fill(' ');
+        for (size_t i = 0; i < 16; ++i)
+        {
+            if (offset + i < payload.size())
+            {
+                const uint8_t b = payload[offset + i];
+                stream << std::setw(2) << static_cast<unsigned int>(b) << L' ';
+                ascii[i] = printableAsciiByte(b);
+            }
+            else
+            {
+                stream << L"   ";
+                ascii[i] = ' ';
+            }
+        }
+
+        stream << L" |";
+        for (char ch : ascii)
+        {
+            stream << static_cast<wchar_t>(ch);
+        }
+        stream << L"|\n";
+    }
+
+    return stream.str();
+}
+
+std::wstring buildFieldDiffLine(const wchar_t* label, const std::string& inGameValue, const std::string& standaloneValue)
+{
+    std::wostringstream line;
+    line << label << L": in-game='" << wideFromAscii(inGameValue)
+         << L"' standalone='" << wideFromAscii(standaloneValue) << L"'";
+    if (inGameValue == standaloneValue)
+    {
+        line << L" [same]";
+    }
+    else
+    {
+        line << L" [DIFF]";
+    }
+    return line.str();
+}
+
+std::wstring buildBeaconDiffReport(const BeaconSample& inGame, const BeaconSample& standalone)
+{
+    std::wostringstream report;
+    report << L"===== NFSLAN RELAY BEACON DIFF REPORT =====\n";
+    report << L"Build tag: " << kBuildTag << L"\n";
+    report << L"Generated: " << nowTimestamp() << L"\n\n";
+    report << L"[In-game sample] " << formatSampleSummary(inGame) << L"\n";
+    report << L"[Standalone sample] " << formatSampleSummary(standalone) << L"\n\n";
+
+    const std::string inIdent = readPrintableField(inGame.payload, kBeaconFieldIdentOffset, kBeaconFieldIdentMax);
+    const std::string stIdent = readPrintableField(standalone.payload, kBeaconFieldIdentOffset, kBeaconFieldIdentMax);
+    const std::string inName = readPrintableField(inGame.payload, kBeaconFieldNameOffset, kBeaconFieldNameMax);
+    const std::string stName = readPrintableField(standalone.payload, kBeaconFieldNameOffset, kBeaconFieldNameMax);
+    const std::string inStats = readPrintableField(inGame.payload, kBeaconFieldStatsOffset, kBeaconFieldStatsMax);
+    const std::string stStats = readPrintableField(standalone.payload, kBeaconFieldStatsOffset, kBeaconFieldStatsMax);
+    const std::string inTransport = readPrintableField(inGame.payload, kBeaconFieldTransportOffset, kBeaconFieldTransportMax);
+    const std::string stTransport = readPrintableField(standalone.payload, kBeaconFieldTransportOffset, kBeaconFieldTransportMax);
+
+    report << L"[Field comparison]\n";
+    report << buildFieldDiffLine(L"ident@0x008", inIdent, stIdent) << L"\n";
+    report << buildFieldDiffLine(L"name@0x028", inName, stName) << L"\n";
+    report << buildFieldDiffLine(L"stats@0x048", inStats, stStats) << L"\n";
+    report << buildFieldDiffLine(L"transport@0x130", inTransport, stTransport) << L"\n\n";
+
+    const size_t commonLength = (std::min)(inGame.payload.size(), standalone.payload.size());
+    std::vector<size_t> diffOffsets;
+    diffOffsets.reserve(commonLength);
+    for (size_t i = 0; i < commonLength; ++i)
+    {
+        if (inGame.payload[i] != standalone.payload[i])
+        {
+            diffOffsets.push_back(i);
+        }
+    }
+
+    report << L"[Byte diff summary]\n";
+    report << L"Common bytes compared: " << commonLength << L"\n";
+    report << L"Changed offsets: " << diffOffsets.size() << L"\n";
+    if (inGame.payload.size() != standalone.payload.size())
+    {
+        report << L"Payload sizes differ: in-game=" << inGame.payload.size()
+               << L", standalone=" << standalone.payload.size() << L"\n";
+    }
+
+    if (!diffOffsets.empty())
+    {
+        report << L"\n[Byte diff ranges]\n";
+        size_t rangeStart = diffOffsets[0];
+        size_t previous = diffOffsets[0];
+        for (size_t i = 1; i < diffOffsets.size(); ++i)
+        {
+            const size_t current = diffOffsets[i];
+            if (current == previous + 1)
+            {
+                previous = current;
+                continue;
+            }
+
+            report << L"0x" << std::hex << rangeStart << L"-0x" << previous
+                   << std::dec << L" (" << (previous - rangeStart + 1) << L" bytes)\n";
+            rangeStart = current;
+            previous = current;
+        }
+        report << L"0x" << std::hex << rangeStart << L"-0x" << previous
+               << std::dec << L" (" << (previous - rangeStart + 1) << L" bytes)\n";
+
+        report << L"\n[Byte-by-byte diff]\n";
+        report << std::hex << std::setfill(L'0');
+        for (size_t offset : diffOffsets)
+        {
+            const uint8_t inByte = inGame.payload[offset];
+            const uint8_t stByte = standalone.payload[offset];
+            report << L"0x" << std::setw(3) << offset
+                   << L": " << std::setw(2) << static_cast<unsigned int>(inByte)
+                   << L"('" << static_cast<wchar_t>(printableAsciiByte(inByte)) << L"')"
+                   << L" -> "
+                   << std::setw(2) << static_cast<unsigned int>(stByte)
+                   << L"('" << static_cast<wchar_t>(printableAsciiByte(stByte)) << L"')\n";
+        }
+        report << std::dec;
+    }
+
+    report << L"\n[Hex dump: in-game]\n" << buildHexDump(inGame.payload);
+    report << L"\n[Hex dump: standalone]\n" << buildHexDump(standalone.payload);
+    report << L"\n===== END REPORT =====\n";
+    return report.str();
+}
+
+bool copyTextToClipboard(const std::wstring& text)
+{
+    if (!OpenClipboard(g_app.window))
+    {
+        return false;
+    }
+
+    EmptyClipboard();
+    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!memory)
+    {
+        CloseClipboard();
+        return false;
+    }
+
+    void* lock = GlobalLock(memory);
+    if (!lock)
+    {
+        GlobalFree(memory);
+        CloseClipboard();
+        return false;
+    }
+
+    std::memcpy(lock, text.c_str(), bytes);
+    GlobalUnlock(memory);
+
+    if (!SetClipboardData(CF_UNICODETEXT, memory))
+    {
+        GlobalFree(memory);
+        CloseClipboard();
+        return false;
+    }
+
+    CloseClipboard();
+    return true;
 }
 
 bool parsePeerList(const std::wstring& peersText, std::vector<uint32_t>* peersOut, std::wstring* errorOut)
@@ -763,6 +1114,317 @@ void runRelayWorker(RelayConfig config)
     WSACleanup();
 }
 
+std::string toUtf8(const std::wstring& text)
+{
+    if (text.empty())
+    {
+        return {};
+    }
+
+    const int length = WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        text.c_str(),
+        static_cast<int>(text.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr);
+    if (length <= 0)
+    {
+        return {};
+    }
+
+    std::string out(static_cast<size_t>(length), '\0');
+    WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        text.c_str(),
+        static_cast<int>(text.size()),
+        out.data(),
+        length,
+        nullptr,
+        nullptr);
+    return out;
+}
+
+std::wstring relayDiffReportPath()
+{
+    wchar_t modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, modulePath, static_cast<DWORD>(_countof(modulePath))) <= 0)
+    {
+        return L"relay-beacon-diff.txt";
+    }
+
+    std::wstring path(modulePath);
+    const size_t slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos)
+    {
+        return L"relay-beacon-diff.txt";
+    }
+    return path.substr(0, slash + 1) + L"relay-beacon-diff.txt";
+}
+
+void finalizeCaptureThread()
+{
+    if (g_app.capture.worker.joinable())
+    {
+        g_app.capture.worker.join();
+    }
+    g_app.capture.running.store(false);
+    g_app.capture.stopRequested.store(false);
+    setUiRunningState(g_app.runtime.running.load());
+}
+
+void postCaptureDone(CaptureResultMessage* message)
+{
+    if (!g_app.window)
+    {
+        delete message;
+        return;
+    }
+    PostMessageW(g_app.window, WM_APP_CAPTURE_DONE, 0, reinterpret_cast<LPARAM>(message));
+}
+
+void runCaptureWorker(CaptureTarget target, uint16_t listenPort)
+{
+    auto* result = new CaptureResultMessage();
+    result->target = target;
+
+    WSADATA wsadata{};
+    const int startup = WSAStartup(MAKEWORD(2, 2), &wsadata);
+    if (startup != 0)
+    {
+        result->success = false;
+        result->info = L"Capture failed: WSAStartup error " + std::to_wstring(startup) + L".";
+        postCaptureDone(result);
+        return;
+    }
+
+    SOCKET receiveSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (receiveSocket == INVALID_SOCKET)
+    {
+        const int err = WSAGetLastError();
+        WSACleanup();
+        result->success = false;
+        result->info = L"Capture failed: cannot create UDP socket (WSA " + std::to_wstring(err) + L").";
+        postCaptureDone(result);
+        return;
+    }
+
+    DWORD timeoutMs = 250;
+    setsockopt(
+        receiveSocket,
+        SOL_SOCKET,
+        SO_RCVTIMEO,
+        reinterpret_cast<const char*>(&timeoutMs),
+        sizeof(timeoutMs));
+
+    sockaddr_in bindAddress{};
+    bindAddress.sin_family = AF_INET;
+    bindAddress.sin_port = htons(listenPort);
+    bindAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(receiveSocket, reinterpret_cast<const sockaddr*>(&bindAddress), sizeof(bindAddress)) == SOCKET_ERROR)
+    {
+        const int err = WSAGetLastError();
+        closesocket(receiveSocket);
+        WSACleanup();
+        result->success = false;
+        result->info =
+            L"Capture failed: cannot bind UDP " + std::to_wstring(listenPort)
+            + L" (WSA " + std::to_wstring(err) + L"). Stop relay/game host using this port.";
+        postCaptureDone(result);
+        return;
+    }
+
+    std::vector<uint8_t> buffer(2048);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kDefaultCaptureTimeoutMs);
+    while (!g_app.capture.stopRequested.load() && std::chrono::steady_clock::now() < deadline)
+    {
+        sockaddr_in from{};
+        int fromLen = sizeof(from);
+        const int received = recvfrom(
+            receiveSocket,
+            reinterpret_cast<char*>(buffer.data()),
+            static_cast<int>(buffer.size()),
+            0,
+            reinterpret_cast<sockaddr*>(&from),
+            &fromLen);
+        if (received <= 0)
+        {
+            continue;
+        }
+
+        std::vector<uint8_t> payload(buffer.begin(), buffer.begin() + received);
+        if (!looksLikeLanDiscoveryPayload(payload))
+        {
+            continue;
+        }
+
+        result->success = true;
+        result->sample.payload = std::move(payload);
+        result->sample.sourceIp = from.sin_addr.s_addr;
+        result->sample.sourcePort = ntohs(from.sin_port);
+        result->sample.capturedAt = nowTimestamp();
+        std::wostringstream msg;
+        msg << L"Captured "
+            << ((target == CaptureTarget::InGame) ? L"in-game" : L"standalone")
+            << L" sample from " << formatIpv4Address(result->sample.sourceIp)
+            << L":" << result->sample.sourcePort
+            << L" bytes=" << result->sample.payload.size() << L".";
+        result->info = msg.str();
+        break;
+    }
+
+    if (!result->success)
+    {
+        if (g_app.capture.stopRequested.load())
+        {
+            result->info = L"Capture cancelled.";
+        }
+        else
+        {
+            result->info = L"Capture timeout after "
+                + std::to_wstring(kDefaultCaptureTimeoutMs / 1000)
+                + L"s. Start the selected server and keep relay port visible on network.";
+        }
+    }
+
+    closesocket(receiveSocket);
+    WSACleanup();
+
+    if (g_app.capture.stopRequested.load())
+    {
+        delete result;
+        return;
+    }
+    postCaptureDone(result);
+}
+
+void startCaptureFromUi(CaptureTarget target)
+{
+    if (g_app.runtime.running.load())
+    {
+        showValidationError(L"Stop relay before capture. Capture needs exclusive bind on listen UDP port.");
+        return;
+    }
+    if (g_app.capture.running.load())
+    {
+        showValidationError(L"A capture is already in progress.");
+        return;
+    }
+
+    uint16_t listenPort = 0;
+    if (!parsePort(getWindowTextString(g_app.listenPortEdit), &listenPort))
+    {
+        showValidationError(L"Listen port must be in range 1..65535.");
+        return;
+    }
+
+    g_app.capture.stopRequested.store(false);
+    g_app.capture.running.store(true);
+    setUiRunningState(g_app.runtime.running.load());
+    setWindowTextString(
+        g_app.captureStatusStatic,
+        (target == CaptureTarget::InGame)
+            ? L"Capturing IN-GAME sample... keep only game-host server active."
+            : L"Capturing STANDALONE sample... keep only wrapper server active.");
+    appendLogLine(
+        (target == CaptureTarget::InGame)
+            ? L"Capture started: IN-GAME sample (listen UDP " + std::to_wstring(listenPort) + L")."
+            : L"Capture started: STANDALONE sample (listen UDP " + std::to_wstring(listenPort) + L").");
+
+    try
+    {
+        g_app.capture.worker = std::thread(
+            [target, listenPort]()
+            {
+                runCaptureWorker(target, listenPort);
+            });
+    }
+    catch (...)
+    {
+        g_app.capture.running.store(false);
+        g_app.capture.stopRequested.store(false);
+        setUiRunningState(g_app.runtime.running.load());
+        showValidationError(L"Failed to start capture thread.");
+    }
+}
+
+void resetCapturedSamples()
+{
+    if (g_app.capture.running.load())
+    {
+        showValidationError(L"Stop current capture before resetting samples.");
+        return;
+    }
+
+    g_app.inGameSample.reset();
+    g_app.standaloneSample.reset();
+    g_app.lastDiffReport.clear();
+    updateCaptureStatusLabel();
+    setUiRunningState(g_app.runtime.running.load());
+    appendLogLine(L"Cleared captured samples and previous diff report.");
+}
+
+void generateDiffFromSamples()
+{
+    if (!g_app.inGameSample.has_value() || !g_app.standaloneSample.has_value())
+    {
+        showValidationError(L"Capture both IN-GAME and STANDALONE samples first.");
+        return;
+    }
+
+    g_app.lastDiffReport = buildBeaconDiffReport(*g_app.inGameSample, *g_app.standaloneSample);
+    setUiRunningState(g_app.runtime.running.load());
+    appendLogLine(L"Generated detailed beacon diff report.");
+    appendRawToEdit(g_app.logEdit, L"\r\n" + g_app.lastDiffReport + L"\r\n");
+}
+
+void copyDiffReportToClipboard()
+{
+    if (g_app.lastDiffReport.empty())
+    {
+        showValidationError(L"No diff report available. Generate a report first.");
+        return;
+    }
+
+    if (!copyTextToClipboard(g_app.lastDiffReport))
+    {
+        showValidationError(L"Failed to copy report to clipboard.");
+        return;
+    }
+
+    appendLogLine(L"Diff report copied to clipboard.");
+}
+
+void saveDiffReportToFile()
+{
+    if (g_app.lastDiffReport.empty())
+    {
+        showValidationError(L"No diff report available. Generate a report first.");
+        return;
+    }
+
+    const std::wstring path = relayDiffReportPath();
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file)
+    {
+        showValidationError(L"Failed to open output file for diff report.");
+        return;
+    }
+
+    const std::string utf8 = toUtf8(g_app.lastDiffReport);
+    file.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+    if (!file.good())
+    {
+        showValidationError(L"Failed to write diff report file.");
+        return;
+    }
+
+    appendLogLine(L"Saved diff report: " + path);
+}
+
 void showValidationError(const std::wstring& message)
 {
     MessageBoxW(g_app.window, message.c_str(), L"NFSLAN Relay", MB_ICONERROR | MB_OK);
@@ -772,6 +1434,11 @@ void startRelayFromUi()
 {
     if (g_app.runtime.running.load())
     {
+        return;
+    }
+    if (g_app.capture.running.load())
+    {
+        showValidationError(L"Wait for capture to finish (or click Stop) before starting relay.");
         return;
     }
 
@@ -830,6 +1497,26 @@ void stopRelayFromUi(bool waitForThread)
     }
 }
 
+void stopCaptureFromUi(bool waitForThread)
+{
+    if (!g_app.capture.running.load() && !g_app.capture.worker.joinable())
+    {
+        return;
+    }
+
+    g_app.capture.stopRequested.store(true);
+    setWindowTextString(g_app.captureStatusStatic, L"Stopping capture...");
+
+    if (waitForThread && g_app.capture.worker.joinable())
+    {
+        g_app.capture.worker.join();
+        g_app.capture.running.store(false);
+        g_app.capture.stopRequested.store(false);
+        updateCaptureStatusLabel();
+        setUiRunningState(g_app.runtime.running.load());
+    }
+}
+
 void finalizeStoppedUi()
 {
     if (g_app.runtime.worker.joinable())
@@ -883,7 +1570,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         HWND title = createLabel(L"NFSLAN Relay (UG2/MW LAN Discovery Bridge)", left, top, 420, 20);
         setControlFont(title);
 
-        HWND buildTag = createLabel(L"Build: 2026-02-11-relay-ui-1", left, top + 22, 300, 18);
+        const std::wstring buildTagText = std::wstring(L"Build: ") + kBuildTag;
+        HWND buildTag = createLabel(buildTagText.c_str(), left, top + 22, 300, 18);
         setControlFont(buildTag);
 
         createLabel(L"Mode", left, top + 52, 120, 18);
@@ -1035,23 +1723,124 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             L"Notes:\r\n"
             L"- Spoof modes need Administrator rights on Windows.\r\n"
             L"- Use No spoof mode first if testing on one PC.\r\n"
-            L"- Relay forwards UDP discovery packets to peer list.",
+            L"- Relay forwards UDP discovery packets to peer list.\r\n"
+            L"- Capture diff flow: in-game sample -> standalone sample -> Generate Diff.",
             left,
             top + 568,
             leftWidth,
-            72);
+            88);
         setControlFont(hint);
 
-        createLabel(L"Runtime log", right, top + 22, 200, 18);
+        createLabel(L"Beacon diff capture (in-game vs standalone)", right, top + 22, rightWidth, 18);
+
+        g_app.captureInGameButton = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Capture In-Game",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            right,
+            top + 44,
+            140,
+            28,
+            hwnd,
+            reinterpret_cast<HMENU>(kIdCaptureInGameButton),
+            nullptr,
+            nullptr);
+        setControlFont(g_app.captureInGameButton);
+
+        g_app.captureStandaloneButton = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Capture Standalone",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            right + 150,
+            top + 44,
+            160,
+            28,
+            hwnd,
+            reinterpret_cast<HMENU>(kIdCaptureStandaloneButton),
+            nullptr,
+            nullptr);
+        setControlFont(g_app.captureStandaloneButton);
+
+        g_app.generateDiffButton = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Generate Diff",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            right + 320,
+            top + 44,
+            120,
+            28,
+            hwnd,
+            reinterpret_cast<HMENU>(kIdGenerateDiffButton),
+            nullptr,
+            nullptr);
+        setControlFont(g_app.generateDiffButton);
+
+        g_app.copyDiffButton = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Copy Diff",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            right,
+            top + 78,
+            120,
+            26,
+            hwnd,
+            reinterpret_cast<HMENU>(kIdCopyDiffButton),
+            nullptr,
+            nullptr);
+        setControlFont(g_app.copyDiffButton);
+
+        g_app.saveDiffButton = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Save Diff",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            right + 130,
+            top + 78,
+            120,
+            26,
+            hwnd,
+            reinterpret_cast<HMENU>(kIdSaveDiffButton),
+            nullptr,
+            nullptr);
+        setControlFont(g_app.saveDiffButton);
+
+        g_app.resetSamplesButton = CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Reset Samples",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            right + 260,
+            top + 78,
+            130,
+            26,
+            hwnd,
+            reinterpret_cast<HMENU>(kIdResetSamplesButton),
+            nullptr,
+            nullptr);
+        setControlFont(g_app.resetSamplesButton);
+
+        g_app.captureStatusStatic = createLabel(
+            L"In-game: <missing> | Standalone: <missing>",
+            right,
+            top + 110,
+            rightWidth,
+            34);
+        setControlFont(g_app.captureStatusStatic);
+
+        createLabel(L"Runtime log", right, top + 150, 200, 18);
         g_app.logEdit = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             L"EDIT",
             L"",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
             right,
-            top + 42,
+            top + 170,
             rightWidth,
-            598,
+            470,
             hwnd,
             reinterpret_cast<HMENU>(kIdLogEdit),
             nullptr,
@@ -1061,6 +1850,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         appendLogLine(L"NFSLAN Relay UI initialized.");
         appendLogLine(L"Build tag: " + std::wstring(kBuildTag));
         setUiRunningState(false);
+        updateCaptureStatusLabel();
         refreshModeDependentUi();
         return 0;
     }
@@ -1080,15 +1870,60 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (controlId == kIdStopButton && code == BN_CLICKED)
         {
-            stopRelayFromUi(true);
-            finalizeStoppedUi();
-            appendLogLine(L"Stop requested by user.");
+            bool handled = false;
+            if (g_app.capture.running.load() || g_app.capture.worker.joinable())
+            {
+                stopCaptureFromUi(true);
+                appendLogLine(L"Capture stop requested by user.");
+                handled = true;
+            }
+            if (g_app.runtime.running.load() || g_app.runtime.worker.joinable())
+            {
+                stopRelayFromUi(true);
+                finalizeStoppedUi();
+                appendLogLine(L"Relay stop requested by user.");
+                handled = true;
+            }
+            if (!handled)
+            {
+                appendLogLine(L"Nothing to stop.");
+            }
             return 0;
         }
         if (controlId == kIdClearLogButton && code == BN_CLICKED)
         {
             setWindowTextString(g_app.logEdit, L"");
             appendLogLine(L"Log cleared.");
+            return 0;
+        }
+        if (controlId == kIdCaptureInGameButton && code == BN_CLICKED)
+        {
+            startCaptureFromUi(CaptureTarget::InGame);
+            return 0;
+        }
+        if (controlId == kIdCaptureStandaloneButton && code == BN_CLICKED)
+        {
+            startCaptureFromUi(CaptureTarget::Standalone);
+            return 0;
+        }
+        if (controlId == kIdGenerateDiffButton && code == BN_CLICKED)
+        {
+            generateDiffFromSamples();
+            return 0;
+        }
+        if (controlId == kIdCopyDiffButton && code == BN_CLICKED)
+        {
+            copyDiffReportToClipboard();
+            return 0;
+        }
+        if (controlId == kIdSaveDiffButton && code == BN_CLICKED)
+        {
+            saveDiffReportToFile();
+            return 0;
+        }
+        if (controlId == kIdResetSamplesButton && code == BN_CLICKED)
+        {
+            resetCapturedSamples();
             return 0;
         }
         break;
@@ -1118,8 +1953,34 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         finalizeStoppedUi();
         return 0;
     }
+    case WM_APP_CAPTURE_DONE:
+    {
+        auto* result = reinterpret_cast<CaptureResultMessage*>(lParam);
+        if (result)
+        {
+            if (result->success)
+            {
+                if (result->target == CaptureTarget::InGame)
+                {
+                    g_app.inGameSample = result->sample;
+                }
+                else
+                {
+                    g_app.standaloneSample = result->sample;
+                }
+                g_app.lastDiffReport.clear();
+            }
+            appendLogLine(result->info);
+            delete result;
+        }
+
+        finalizeCaptureThread();
+        updateCaptureStatusLabel();
+        return 0;
+    }
     case WM_CLOSE:
     {
+        stopCaptureFromUi(true);
         stopRelayFromUi(true);
         finalizeStoppedUi();
         DestroyWindow(hwnd);

@@ -110,6 +110,25 @@ In `NFSLAN-GUI` builds with embedded relay, open it from the `Relay tool` button
 5. If using fixed-source mode, provide `Fixed source IPv4`.
 6. Click `Start Relay`.
 
+### Beacon diff capture (in-game vs standalone)
+
+Use this when you need a precise packet-level comparison between the game-hosted server beacon and standalone launcher beacon.
+
+1. In relay UI, keep relay stopped.
+2. Click `Capture In-Game` while only in-game host server is active.
+3. Stop in-game host server.
+4. Click `Capture Standalone` while only standalone server is active.
+5. Click `Generate Diff`.
+6. Click `Save Diff` (writes `relay-beacon-diff.txt` next to the EXE) or `Copy Diff`.
+
+Capture mode binds the listen UDP port directly, so it cannot run while relay forwarding is active.
+
+The report includes:
+- key field comparison (`ident`, `name`, `stats`, transport block)
+- changed byte ranges
+- byte-by-byte offset diff
+- full hex dump for both samples
+
 ### Notes
 
 - Spoof modes require running the app as Administrator on Windows because raw sockets + `IP_HDRINCL` are used.
