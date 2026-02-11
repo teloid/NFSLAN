@@ -28,9 +28,20 @@ constexpr std::uintptr_t kLanManagerGlobalRva = 0x004B7E28;
 constexpr std::uintptr_t kLanManagerEntriesStartOffset = 0x28;
 constexpr std::uintptr_t kLanManagerEntriesEndOffset = 0x2C;
 constexpr std::uintptr_t kLanEntryActiveOffset = 0x28;
+constexpr std::uintptr_t kLanEntryReadyOffset = 0x194;
 constexpr std::uintptr_t kLanEntrySelfFlagOffset = 0x19C;
 constexpr std::uintptr_t kLanEntryStride = 0x1A4;
 constexpr std::uint32_t kMaxReasonableEntries = 1024;
+constexpr std::uintptr_t kLegacyImageBase = 0x00400000;
+
+struct PatchCycleInfo
+{
+    std::uint32_t manager = 0;
+    std::uint32_t entryCount = 0;
+    std::uint32_t activeCount = 0;
+    std::uint32_t readyCount = 0;
+    std::uint32_t selfFlagCount = 0;
+};
 
 std::wstring trim(const std::wstring& input)
 {
@@ -206,15 +217,21 @@ std::optional<std::uintptr_t> queryMainModuleBase(DWORD pid)
     return base;
 }
 
-bool patchSelfFilterFlags(HANDLE process, std::uintptr_t imageBase, std::uint64_t* clearedOut)
+bool patchSelfFilterFlags(HANDLE process, std::uintptr_t imageBase, std::uint64_t* clearedOut, PatchCycleInfo* infoOut)
 {
+    PatchCycleInfo info{};
     std::uint32_t manager = 0;
     if (!readRemote(process, imageBase + kLanManagerGlobalRva, &manager))
     {
         return false;
     }
+    info.manager = manager;
     if (manager == 0)
     {
+        if (infoOut)
+        {
+            *infoOut = info;
+        }
         return true;
     }
 
@@ -240,8 +257,14 @@ bool patchSelfFilterFlags(HANDLE process, std::uintptr_t imageBase, std::uint64_
     const std::uint32_t entryCount = span / static_cast<std::uint32_t>(kLanEntryStride);
     if (entryCount == 0 || entryCount > kMaxReasonableEntries)
     {
+        info.entryCount = entryCount;
+        if (infoOut)
+        {
+            *infoOut = info;
+        }
         return true;
     }
+    info.entryCount = entryCount;
 
     std::uint64_t cleared = 0;
     for (std::uint32_t i = 0; i < entryCount; ++i)
@@ -253,6 +276,13 @@ bool patchSelfFilterFlags(HANDLE process, std::uintptr_t imageBase, std::uint64_
         {
             continue;
         }
+        ++info.activeCount;
+
+        std::uint32_t ready = 0;
+        if (readRemote(process, entry + kLanEntryReadyOffset, &ready) && ready != 0)
+        {
+            ++info.readyCount;
+        }
 
         std::uint32_t selfFlag = 0;
         if (!readRemote(process, entry + kLanEntrySelfFlagOffset, &selfFlag))
@@ -262,6 +292,7 @@ bool patchSelfFilterFlags(HANDLE process, std::uintptr_t imageBase, std::uint64_
 
         if (selfFlag != 0)
         {
+            ++info.selfFlagCount;
             const std::uint32_t zero = 0;
             if (writeRemote(process, entry + kLanEntrySelfFlagOffset, zero))
             {
@@ -273,6 +304,10 @@ bool patchSelfFilterFlags(HANDLE process, std::uintptr_t imageBase, std::uint64_
     if (clearedOut)
     {
         *clearedOut = cleared;
+    }
+    if (infoOut)
+    {
+        *infoOut = info;
     }
     return true;
 }
@@ -381,9 +416,16 @@ int wmain(int argc, wchar_t* argv[])
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
+    bool usingFallbackBase = false;
     if (!imageBase.has_value() || *imageBase == 0)
     {
-        logLine(L"WARNING: could not resolve main module base before resume; patching may not work.");
+        logLine(L"WARNING: could not resolve main module base before resume.");
+        imageBase = kLegacyImageBase;
+        usingFallbackBase = true;
+        std::wstringstream fallbackMsg;
+        fallbackMsg << L"Using legacy fallback base: 0x" << std::hex << *imageBase << std::dec
+                    << L" (common for UG2 32-bit images).";
+        logLine(fallbackMsg.str());
     }
     else
     {
@@ -397,9 +439,11 @@ int wmain(int argc, wchar_t* argv[])
     pi.hThread = nullptr;
 
     logLine(L"Game resumed. Self-filter patch loop is active.");
+    logLine(L"Patch offsets: manager=+0x4B7E28 entryStride=0x1A4 active=+0x28 ready=+0x194 self=+0x19C.");
 
     std::uint64_t totalCleared = 0;
     auto lastSummary = std::chrono::steady_clock::now();
+    bool postResumeBaseLogged = false;
 
     while (true)
     {
@@ -418,11 +462,32 @@ int wmain(int argc, wchar_t* argv[])
         if (!imageBase.has_value() || *imageBase == 0)
         {
             imageBase = queryMainModuleBase(pi.dwProcessId);
+            if (imageBase.has_value() && *imageBase != 0 && !postResumeBaseLogged)
+            {
+                postResumeBaseLogged = true;
+                std::wstringstream msg;
+                msg << L"Resolved module base after resume: 0x" << std::hex << *imageBase << std::dec;
+                logLine(msg.str());
+            }
             continue;
         }
 
+        if (usingFallbackBase)
+        {
+            const std::optional<std::uintptr_t> probedBase = queryMainModuleBase(pi.dwProcessId);
+            if (probedBase.has_value() && *probedBase != 0)
+            {
+                usingFallbackBase = false;
+                imageBase = probedBase;
+                std::wstringstream msg;
+                msg << L"Replaced fallback base with detected module base: 0x" << std::hex << *imageBase << std::dec;
+                logLine(msg.str());
+            }
+        }
+
         std::uint64_t clearedThisCycle = 0;
-        if (!patchSelfFilterFlags(pi.hProcess, *imageBase, &clearedThisCycle))
+        PatchCycleInfo cycleInfo{};
+        if (!patchSelfFilterFlags(pi.hProcess, *imageBase, &clearedThisCycle, &cycleInfo))
         {
             logLine(L"ReadProcessMemory failed while patching. Stopping patch loop.");
             break;
@@ -444,7 +509,16 @@ int wmain(int argc, wchar_t* argv[])
             if (now - lastSummary >= std::chrono::seconds(5))
             {
                 lastSummary = now;
-                logLine(L"Patch loop alive. Total flags cleared=" + std::to_wstring(totalCleared) + L".");
+                std::wstringstream status;
+                status << L"Patch loop alive. base=0x" << std::hex << *imageBase << std::dec
+                       << L" manager=0x" << std::hex << cycleInfo.manager << std::dec
+                       << L" entries=" << cycleInfo.entryCount
+                       << L" active=" << cycleInfo.activeCount
+                       << L" ready=" << cycleInfo.readyCount
+                       << L" self=" << cycleInfo.selfFlagCount
+                       << L" totalCleared=" << totalCleared
+                       << L".";
+                logLine(status.str());
             }
         }
     }
