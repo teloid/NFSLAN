@@ -30,7 +30,6 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <iphlpapi.h>
 #include "injector/injector.hpp"
 #include "injector/assembly.hpp"
 #include "injector/hooking/Hooking.Patterns.h"
@@ -1590,65 +1589,29 @@ bool LooksPrivateOrNonRoutableIpv4(const std::string& value);
 
 std::optional<std::string> DetectPreferredLocalLanIpv4()
 {
-    ULONG bufferSize = 0;
-    const ULONG flags =
-        GAA_FLAG_SKIP_ANYCAST
-        | GAA_FLAG_SKIP_MULTICAST
-        | GAA_FLAG_SKIP_DNS_SERVER;
-
-    ULONG result = GetAdaptersAddresses(AF_INET, flags, nullptr, nullptr, &bufferSize);
-    if (result != ERROR_BUFFER_OVERFLOW || bufferSize == 0)
-    {
-        return std::nullopt;
-    }
-
-    std::vector<unsigned char> buffer(bufferSize);
-    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-    result = GetAdaptersAddresses(AF_INET, flags, nullptr, adapters, &bufferSize);
-    if (result != NO_ERROR)
-    {
-        return std::nullopt;
-    }
-
     std::optional<std::string> fallback;
-
-    for (auto* adapter = adapters; adapter != nullptr; adapter = adapter->Next)
+    try
     {
-        if (adapter->OperStatus != IfOperStatusUp)
-        {
-            continue;
-        }
-#ifdef IF_TYPE_SOFTWARE_LOOPBACK
-        if (adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK)
-        {
-            continue;
-        }
-#endif
+        WSASession wsaSession;
 
-        for (auto* unicast = adapter->FirstUnicastAddress; unicast != nullptr; unicast = unicast->Next)
+        auto considerCandidate = [&](const in_addr& address) -> std::optional<std::string>
         {
-            if (!unicast->Address.lpSockaddr || unicast->Address.lpSockaddr->sa_family != AF_INET)
+            const char* text = inet_ntoa(address);
+            if (!text)
             {
-                continue;
+                return std::nullopt;
             }
 
-            const auto* in = reinterpret_cast<sockaddr_in*>(unicast->Address.lpSockaddr);
-            char ipBuffer[INET_ADDRSTRLEN] = {};
-            if (!InetNtopA(AF_INET, const_cast<in_addr*>(&in->sin_addr), ipBuffer, static_cast<DWORD>(sizeof(ipBuffer))))
-            {
-                continue;
-            }
-
-            const std::string candidate = TrimAscii(ipBuffer);
+            const std::string candidate = TrimAscii(text);
             uint8_t octets[4] = {};
             if (!ParseIpv4(candidate, octets))
             {
-                continue;
+                return std::nullopt;
             }
 
             if (octets[0] == 127 || octets[0] == 0)
             {
-                continue;
+                return std::nullopt;
             }
 
             if (LooksPrivateOrNonRoutableIpv4(candidate))
@@ -1660,7 +1623,64 @@ std::optional<std::string> DetectPreferredLocalLanIpv4()
             {
                 fallback = candidate;
             }
+            return std::nullopt;
+        };
+
+        // Route-based probe: picks the IPv4 address that Windows would use externally.
+        SOCKET probe = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (probe != INVALID_SOCKET)
+        {
+            sockaddr_in remote{};
+            remote.sin_family = AF_INET;
+            remote.sin_port = htons(53);
+            if (InetPtonA(AF_INET, "8.8.8.8", &remote.sin_addr) == 1
+                && connect(probe, reinterpret_cast<const sockaddr*>(&remote), sizeof(remote)) == 0)
+            {
+                sockaddr_in local{};
+                int localLen = static_cast<int>(sizeof(local));
+                if (getsockname(probe, reinterpret_cast<sockaddr*>(&local), &localLen) == 0)
+                {
+                    if (const auto preferred = considerCandidate(local.sin_addr))
+                    {
+                        closesocket(probe);
+                        return preferred;
+                    }
+                }
+            }
+            closesocket(probe);
         }
+
+        // Fallback: enumerate host IPv4 addresses via DNS APIs.
+        char hostName[256] = {};
+        if (gethostname(hostName, static_cast<int>(sizeof(hostName))) == 0)
+        {
+            addrinfo hints{};
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_DGRAM;
+
+            addrinfo* results = nullptr;
+            if (getaddrinfo(hostName, nullptr, &hints, &results) == 0 && results != nullptr)
+            {
+                for (addrinfo* entry = results; entry != nullptr; entry = entry->ai_next)
+                {
+                    if (!entry->ai_addr || entry->ai_addrlen < static_cast<int>(sizeof(sockaddr_in)))
+                    {
+                        continue;
+                    }
+                    const auto* in = reinterpret_cast<const sockaddr_in*>(entry->ai_addr);
+                    if (const auto preferred = considerCandidate(in->sin_addr))
+                    {
+                        freeaddrinfo(results);
+                        return preferred;
+                    }
+                }
+                freeaddrinfo(results);
+            }
+        }
+    }
+    catch (...)
+    {
+        // Keep fallback behavior when Winsock bootstrap fails in restrictive environments.
     }
 
     return fallback;
