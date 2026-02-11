@@ -1137,7 +1137,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
+int NFSLANRelayMain(HINSTANCE instance, int showCommand)
 {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -1184,3 +1184,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     return static_cast<int>(message.wParam);
 }
+
+#if !defined(NFSLAN_RELAY_NO_MAIN)
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
+{
+    return NFSLANRelayMain(instance, showCommand);
+}
+#endif

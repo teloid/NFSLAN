@@ -82,6 +82,8 @@ Before launch, native UI now performs profile-aware `server.cfg` validation and 
 
 Use relay when clients/servers are on different subnets and game LAN discovery broadcast (`UDP 9999`) does not cross routing boundaries.
 
+In `NFSLAN-GUI` builds with embedded relay, open it from the `Relay tool` button (same EXE, launched with `--relay-ui`).
+
 ### When to use
 
 - Cross-subnet LAN with routers/firewalls between players

@@ -8,16 +8,20 @@ if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
 
     add_executable(nfslan-native-gui WIN32
         src/NativeMain.cpp
+        src/RelayMain.cpp
     )
 
     target_compile_definitions(nfslan-native-gui PRIVATE
         UNICODE
         _UNICODE
+        NFSLAN_RELAY_NO_MAIN
+        NFSLAN_NATIVE_EMBED_RELAY
     )
 
     target_link_libraries(nfslan-native-gui PRIVATE
         comdlg32
         shell32
+        ws2_32
     )
 
     if(NFSLAN_NATIVE_WIN32_CAN_EMBED)
@@ -38,7 +42,6 @@ if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
         )
 
         target_link_libraries(nfslan-native-gui PRIVATE
-            ws2_32
             iphlpapi
         )
     else()

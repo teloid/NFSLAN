@@ -27,6 +27,7 @@
 ### Native Win32 GUI (x64, external worker mode)
 
 No Qt required.
+This build now includes embedded relay UI entry (`Relay tool` button, `--relay-ui`) in the same executable.
 
 ```powershell
 cmake -S . -B build-x64-native -G "Visual Studio 17 2022" -A x64 `

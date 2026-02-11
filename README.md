@@ -9,7 +9,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 
 ## What is included
 
-- Native Win32 launcher (`NFSLAN-GUI`) with integrated `server.cfg` editor (no Qt runtime dependency)
+- Native Win32 launcher (`NFSLAN-GUI`) with integrated `server.cfg` editor and embedded relay tool launcher (`Relay tool` button) in the same EXE
 - Native Win32 relay app (`NFSLAN-Relay`) for cross-subnet/cross-site LAN discovery forwarding (UG2/MW style UDP `9999` broadcast relay)
 - Native Win32 launcher includes explicit `FORCE_LOCAL` and `ENABLE_GAME_ADDR_FIXUPS` toggles for same-machine host+client scenarios
 - Native Win32 launcher includes `U2_START_MODE` (`0..13`) and `LAN_DIAG` controls with profile-aware preflight validation before launch
@@ -41,8 +41,9 @@ Native Linux loading of this `server.dll` is not available in this project becau
    - optional relay app (`NFSLAN-Relay`) for LAN discovery forwarding across subnets/VPN/internet.
 2. Place game `server.dll` and `server.cfg` in a server folder.
 3. Open `NFSLAN-GUI`, choose game profile, set server name/path, and start.
-4. If host and client run on the same PC, enable `FORCE_LOCAL` and keep `ENABLE_GAME_ADDR_FIXUPS` enabled.
-5. On Linux/macOS, install a Windows compatibility runtime and run the Windows build via Proton/Wine, or use the Qt launcher path.
+4. If needed for cross-subnet discovery, click `Relay tool` in the same app to open embedded `NFSLAN-Relay` mode (`--relay-ui`).
+5. If host and client run on the same PC, enable `FORCE_LOCAL` and keep `ENABLE_GAME_ADDR_FIXUPS` enabled.
+6. On Linux/macOS, install a Windows compatibility runtime and run the Windows build via Proton/Wine, or use the Qt launcher path.
 
 ## Documentation
 

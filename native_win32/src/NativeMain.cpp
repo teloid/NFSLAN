@@ -18,13 +18,16 @@
 #if defined(NFSLAN_NATIVE_EMBED_WORKER)
 int NFSLANWorkerMain(int argc, char* argv[]);
 #endif
+#if defined(NFSLAN_NATIVE_EMBED_RELAY)
+int NFSLANRelayMain(HINSTANCE instance, int showCommand);
+#endif
 
 namespace
 {
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-10-native-ui-rework-1";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-11-native-ui-ultimate-1";
 constexpr int kGameProfileMostWanted = 0;
 constexpr int kGameProfileUnderground2 = 1;
 
@@ -47,6 +50,7 @@ enum ControlId : int
     kIdSaveConfig,
     kIdStart,
     kIdStop,
+    kIdOpenRelay,
     kIdConfigEditor,
     kIdLogView
 };
@@ -70,6 +74,7 @@ struct AppState
     HWND runtimeSummaryLabel = nullptr;
     HWND startButton = nullptr;
     HWND stopButton = nullptr;
+    HWND openRelayButton = nullptr;
 
     HANDLE processHandle = nullptr;
     HANDLE processThread = nullptr;
@@ -488,9 +493,19 @@ std::wstring workerLaunchModeLabel()
 #endif
 }
 
+std::wstring relayLaunchModeLabel()
+{
+#if defined(NFSLAN_NATIVE_EMBED_RELAY)
+    return L"embedded relay UI";
+#else
+    return L"not embedded";
+#endif
+}
+
 std::wstring runtimeSummaryText()
 {
-    return L"Build: " + std::wstring(kUiBuildTag) + L"  |  Worker mode: " + workerLaunchModeLabel();
+    return L"Build: " + std::wstring(kUiBuildTag) + L"  |  Worker: " + workerLaunchModeLabel()
+        + L"  |  Relay: " + relayLaunchModeLabel();
 }
 
 void refreshRuntimeSummaryLabel()
@@ -570,6 +585,7 @@ void appendUiRuntimeContext()
     }
 
     appendLogLine(L"Worker launch mode: " + workerLaunchModeLabel());
+    appendLogLine(L"Relay launch mode: " + relayLaunchModeLabel());
     appendLogLine(L"Selected profile: " + gameProfileDisplayName(currentGameProfileIndex()));
     appendLogLine(L"Server directory: " + currentServerDirectory().wstring());
     appendLogLine(L"Server config: " + currentServerConfigPath().wstring());
@@ -1020,6 +1036,47 @@ std::wstring browseForWorkerExecutable(HWND owner)
     }
 
     return std::wstring(filePath);
+}
+
+void launchRelayUi()
+{
+#if defined(NFSLAN_NATIVE_EMBED_RELAY)
+    const std::wstring commandLine = L"\"" + g_app.exePath + L"\" --relay-ui";
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+
+    std::wstring mutableCommandLine = commandLine;
+    mutableCommandLine.push_back(L'\0');
+
+    const BOOL created = CreateProcessW(
+        g_app.exePath.c_str(),
+        mutableCommandLine.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        0,
+        nullptr,
+        exeDirectory().wstring().c_str(),
+        &si,
+        &pi);
+    if (!created)
+    {
+        const DWORD errorCode = GetLastError();
+        const std::wstring errorDetails =
+            L"Failed to launch relay UI. Win32 error " + std::to_wstring(errorCode) + L": "
+            + formatWin32Error(errorCode);
+        appendLogLine(errorDetails);
+        showError(errorDetails);
+        return;
+    }
+
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    appendLogLine(L"Opened embedded relay UI window.");
+#else
+    showError(L"Relay UI is not embedded in this build.");
+#endif
 }
 
 void stopWorker()
@@ -1725,6 +1782,21 @@ void createUi(HWND window)
         nullptr);
     applyDefaultFontToWindow(g_app.stopButton);
 
+    g_app.openRelayButton = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"Relay tool",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        left + 4 * (buttonWidth + 8),
+        y,
+        buttonWidth + 30,
+        rowHeight,
+        window,
+        reinterpret_cast<HMENU>(kIdOpenRelay),
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.openRelayButton);
+
     y += rowHeight + rowGap;
 
     createLabel(window, L"server.cfg", left, y + 4, labelWidth, rowHeight);
@@ -1877,6 +1949,10 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
         stopWorker();
         return 0;
 
+    case kIdOpenRelay:
+        launchRelayUi();
+        return 0;
+
     default:
         return 0;
     }
@@ -1989,6 +2065,24 @@ bool shouldRunWorkerMode()
 #endif
 }
 
+bool shouldRunRelayMode()
+{
+#if defined(NFSLAN_NATIVE_EMBED_RELAY)
+    int argcW = 0;
+    LPWSTR* argvW = CommandLineToArgvW(GetCommandLineW(), &argcW);
+    if (!argvW)
+    {
+        return false;
+    }
+
+    const bool relayMode = (argcW > 1 && wcscmp(argvW[1], L"--relay-ui") == 0);
+    LocalFree(argvW);
+    return relayMode;
+#else
+    return false;
+#endif
+}
+
 } // namespace
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
@@ -1996,6 +2090,13 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
     wchar_t executablePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
     g_app.exePath = executablePath;
+
+#if defined(NFSLAN_NATIVE_EMBED_RELAY)
+    if (shouldRunRelayMode())
+    {
+        return NFSLANRelayMain(instance, showCommand);
+    }
+#endif
 
 #if defined(NFSLAN_NATIVE_EMBED_WORKER)
     if (shouldRunWorkerMode())
