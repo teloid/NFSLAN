@@ -24,7 +24,7 @@ Do not run server directly from your game installation folder; use a separate se
 6. Configure compatibility flags:
    - `FORCE_LOCAL`: enable when hosting and playing from the same machine (UI also switches `ADDR` to `127.0.0.1`)
    - `LOCAL_EMULATION`: enables worker-side LAN discovery emulation bridge (`--local-emulation`)
-   - `DISCOVERY_ADDR`/`DISCOVERY_PORT`: emulation probe endpoint (defaults to `127.0.0.1:9999` in local mode)
+   - `DISCOVERY_ADDR`/`DISCOVERY_PORT`: emulation probe endpoint (`DISCOVERY_PORT` defaults to `9999`; empty `DISCOVERY_ADDR` auto-detects local IPv4, fallback `127.0.0.1`)
    - `ENABLE_GAME_ADDR_FIXUPS`: keep enabled (recommended for mixed local/public address setups)
    - `LAN_DIAG`: optional deep LAN discovery diagnostics (verbose packet-level logs)
    - `U2_START_MODE`: Underground 2-only StartServer mode (`0..13`, default `0`)

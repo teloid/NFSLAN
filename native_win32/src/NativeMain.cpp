@@ -35,7 +35,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-11-native-ui-localemu-1";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-11-native-ui-localemu-2";
 constexpr int kGameProfileMostWanted = 0;
 constexpr int kGameProfileUnderground2 = 1;
 
@@ -919,7 +919,8 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
         const std::wstring discoveryAddr = trim(getConfigValue(configText, L"DISCOVERY_ADDR"));
         if (discoveryAddr.empty())
         {
-            warnings.push_back(L"LOCAL_EMULATION is enabled but DISCOVERY_ADDR is empty; worker will auto-fallback to 127.0.0.1.");
+            warnings.push_back(
+                L"LOCAL_EMULATION is enabled and DISCOVERY_ADDR is empty; worker will auto-detect a local IPv4 (fallback 127.0.0.1).");
         }
         else if (equalCaseInsensitive(discoveryAddr, L"0.0.0.0"))
         {
@@ -1162,14 +1163,10 @@ void applyFieldsToConfigEditor()
         configText = upsertConfigValue(configText, L"DISCOVERY_PORT", L"9999");
 
         std::wstring discoveryAddr = trim(getConfigValue(configText, L"DISCOVERY_ADDR"));
-        if (discoveryAddr.empty() || equalCaseInsensitive(discoveryAddr, L"0.0.0.0"))
+        if (equalCaseInsensitive(discoveryAddr, L"0.0.0.0"))
         {
-            discoveryAddr = forceLocalEnabled ? L"127.0.0.1" : addrValue;
-            if (discoveryAddr.empty() || equalCaseInsensitive(discoveryAddr, L"0.0.0.0"))
-            {
-                discoveryAddr = L"127.0.0.1";
-            }
-            configText = upsertConfigValue(configText, L"DISCOVERY_ADDR", discoveryAddr);
+            // Empty DISCOVERY_ADDR lets worker auto-detect a suitable local LAN IPv4.
+            configText = upsertConfigValue(configText, L"DISCOVERY_ADDR", L"");
         }
     }
 

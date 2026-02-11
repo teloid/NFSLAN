@@ -77,7 +77,7 @@ struct WorkerResolvedSettings
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-11-localemu-1";
+constexpr const char* kBuildTag = "2026-02-11-localemu-2";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -108,6 +108,7 @@ HANDLE gServerIdentityMutex = nullptr;
 std::wstring gServerIdentityMutexName;
 
 bool LooksLikeUg2LanBeacon(const char* payload, int length);
+bool TryParseIpv4Address(const std::string& text, in_addr* addressOut);
 
 std::string TrimAscii(const std::string& input)
 {
@@ -908,37 +909,71 @@ void MirrorUg2BeaconToLoopback(SOCKET socketHandle, const char* payload, int len
     }
 
     const int discoveryPort = (std::max)(1, (std::min)(65535, gLanDiscoveryPort.load()));
+    const std::string configuredDiscoveryAddr = TrimAscii(gLanDiscoveryAddr);
+
+    bool loggedLoopbackFailure = false;
+    bool loggedDiscoveryFailure = false;
+    bool mirroredLoopback = false;
+    bool mirroredDiscovery = false;
+
+    const auto mirrorTo = [&](const sockaddr_in& target, const char* tag, bool* loggedFailure) -> bool
+    {
+        const int mirrorResult = gOriginalSendTo(
+            socketHandle,
+            payload,
+            length,
+            flags,
+            reinterpret_cast<const sockaddr*>(&target),
+            sizeof(target));
+        if (mirrorResult < 0)
+        {
+            if (gLanDiagEnabled.load() && loggedFailure && !(*loggedFailure))
+            {
+                *loggedFailure = true;
+                std::cerr << "NFSLAN: LAN-DIAG " << tag << " mirror failed (WSA error "
+                          << WSAGetLastError() << ").\n";
+            }
+            return false;
+        }
+
+        if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 6))
+        {
+            LogUg2LanBeaconDiag(tag, payload, length, true);
+        }
+        return true;
+    };
 
     sockaddr_in loopbackAddr{};
     loopbackAddr.sin_family = AF_INET;
     loopbackAddr.sin_port = htons(static_cast<u_short>(discoveryPort));
     loopbackAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    mirroredLoopback = mirrorTo(loopbackAddr, "hook-mirror-loopback", &loggedLoopbackFailure);
 
-    const int mirrorResult = gOriginalSendTo(
-        socketHandle,
-        payload,
-        length,
-        flags,
-        reinterpret_cast<sockaddr*>(&loopbackAddr),
-        sizeof(loopbackAddr));
-    if (mirrorResult < 0)
+    in_addr discoveryAddr{};
+    if (TryParseIpv4Address(configuredDiscoveryAddr, &discoveryAddr)
+        && discoveryAddr.s_addr != htonl(INADDR_LOOPBACK))
     {
-        if (gLanDiagEnabled.load())
-        {
-            std::cerr << "NFSLAN: LAN-DIAG loopback mirror failed (WSA error " << WSAGetLastError() << ").\n";
-        }
+        sockaddr_in directAddr{};
+        directAddr.sin_family = AF_INET;
+        directAddr.sin_port = htons(static_cast<u_short>(discoveryPort));
+        directAddr.sin_addr = discoveryAddr;
+        mirroredDiscovery = mirrorTo(directAddr, "hook-mirror-discovery", &loggedDiscoveryFailure);
+    }
+
+    if (!mirroredLoopback && !mirroredDiscovery)
+    {
         return;
     }
 
     if (!gLoopbackMirrorAnnounced.exchange(true))
     {
         std::cout << "NFSLAN: Same-machine UG2 beacon mirror active on 127.0.0.1:"
-                  << discoveryPort << ".\n";
-    }
-
-    if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 6))
-    {
-        LogUg2LanBeaconDiag("hook-mirror-loopback", payload, length, true);
+                  << discoveryPort;
+        if (mirroredDiscovery && !configuredDiscoveryAddr.empty())
+        {
+            std::cout << " and " << configuredDiscoveryAddr << ":" << discoveryPort;
+        }
+        std::cout << ".\n";
     }
 }
 
@@ -1551,6 +1586,86 @@ bool ParseIpv4(const std::string& input, uint8_t* octets)
     return true;
 }
 
+bool LooksPrivateOrNonRoutableIpv4(const std::string& value);
+
+std::optional<std::string> DetectPreferredLocalLanIpv4()
+{
+    ULONG bufferSize = 0;
+    const ULONG flags =
+        GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_DNS_SERVER;
+
+    ULONG result = GetAdaptersAddresses(AF_INET, flags, nullptr, nullptr, &bufferSize);
+    if (result != ERROR_BUFFER_OVERFLOW || bufferSize == 0)
+    {
+        return std::nullopt;
+    }
+
+    std::vector<unsigned char> buffer(bufferSize);
+    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+    result = GetAdaptersAddresses(AF_INET, flags, nullptr, adapters, &bufferSize);
+    if (result != NO_ERROR)
+    {
+        return std::nullopt;
+    }
+
+    std::optional<std::string> fallback;
+
+    for (auto* adapter = adapters; adapter != nullptr; adapter = adapter->Next)
+    {
+        if (adapter->OperStatus != IfOperStatusUp)
+        {
+            continue;
+        }
+#ifdef IF_TYPE_SOFTWARE_LOOPBACK
+        if (adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK)
+        {
+            continue;
+        }
+#endif
+
+        for (auto* unicast = adapter->FirstUnicastAddress; unicast != nullptr; unicast = unicast->Next)
+        {
+            if (!unicast->Address.lpSockaddr || unicast->Address.lpSockaddr->sa_family != AF_INET)
+            {
+                continue;
+            }
+
+            const auto* in = reinterpret_cast<sockaddr_in*>(unicast->Address.lpSockaddr);
+            char ipBuffer[INET_ADDRSTRLEN] = {};
+            if (!InetNtopA(AF_INET, const_cast<in_addr*>(&in->sin_addr), ipBuffer, static_cast<DWORD>(sizeof(ipBuffer))))
+            {
+                continue;
+            }
+
+            const std::string candidate = TrimAscii(ipBuffer);
+            uint8_t octets[4] = {};
+            if (!ParseIpv4(candidate, octets))
+            {
+                continue;
+            }
+
+            if (octets[0] == 127 || octets[0] == 0)
+            {
+                continue;
+            }
+
+            if (LooksPrivateOrNonRoutableIpv4(candidate))
+            {
+                return candidate;
+            }
+
+            if (!fallback.has_value())
+            {
+                fallback = candidate;
+            }
+        }
+    }
+
+    return fallback;
+}
+
 bool LooksPrivateOrNonRoutableIpv4(const std::string& value)
 {
     uint8_t octets[4] = {};
@@ -1859,12 +1974,26 @@ bool ApplyServerConfigCompatibility(
     std::string discoveryAddr = TrimAscii(GetConfigValue(configText, "DISCOVERY_ADDR").value_or(""));
     if (discoveryAddr.empty())
     {
-        discoveryAddr = resolved.sameMachineMode ? "127.0.0.1" : TrimAscii(addrValue);
-        if (discoveryAddr.empty()
-            || EqualsIgnoreCase(discoveryAddr, "0.0.0.0")
-            || discoveryAddr.find("%%bind(") != std::string::npos)
+        if (resolved.localEmulation)
         {
-            discoveryAddr = "127.0.0.1";
+            const auto detectedLan = DetectPreferredLocalLanIpv4();
+            if (detectedLan.has_value())
+            {
+                discoveryAddr = *detectedLan;
+                std::cout << "NFSLAN: Auto-detected DISCOVERY_ADDR=" << discoveryAddr
+                          << " for local emulation.\n";
+            }
+        }
+
+        if (discoveryAddr.empty())
+        {
+            discoveryAddr = resolved.sameMachineMode ? "127.0.0.1" : TrimAscii(addrValue);
+            if (discoveryAddr.empty()
+                || EqualsIgnoreCase(discoveryAddr, "0.0.0.0")
+                || discoveryAddr.find("%%bind(") != std::string::npos)
+            {
+                discoveryAddr = "127.0.0.1";
+            }
         }
 
         if (resolved.localEmulation)
