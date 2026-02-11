@@ -59,6 +59,7 @@ struct WorkerLaunchOptions
     std::string serverName;
     bool disablePatching = false;
     bool sameMachineMode = false;
+    bool localEmulation = false;
     bool lanDiag = false;
     std::optional<int> u2Mode;
 };
@@ -67,12 +68,16 @@ struct WorkerResolvedSettings
 {
     int u2Mode = 0;
     bool lanDiag = false;
+    bool sameMachineMode = false;
+    bool localEmulation = false;
+    int discoveryPort = 9999;
+    std::string discoveryAddr = "127.0.0.1";
 };
 
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
-constexpr int kLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-11-ug2diag-7";
+constexpr int kDefaultLanDiscoveryPort = 9999;
+constexpr const char* kBuildTag = "2026-02-11-localemu-1";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -93,6 +98,9 @@ std::atomic<int> gUg2BeaconPatchedCount{ 0 };
 std::atomic<bool> gLanDiagEnabled{ false };
 std::atomic<int> gLanDiagBeaconLogCount{ 0 };
 std::atomic<bool> gSameMachineModeEnabled{ false };
+std::atomic<bool> gLocalEmulationEnabled{ false };
+std::atomic<int> gLanDiscoveryPort{ kDefaultLanDiscoveryPort };
+std::string gLanDiscoveryAddr = "127.0.0.1";
 std::atomic<bool> gLoopbackMirrorAnnounced{ false };
 std::string gPreferredServerName;
 int gConfiguredServerPort = 9900;
@@ -899,9 +907,11 @@ void MirrorUg2BeaconToLoopback(SOCKET socketHandle, const char* payload, int len
         return;
     }
 
+    const int discoveryPort = (std::max)(1, (std::min)(65535, gLanDiscoveryPort.load()));
+
     sockaddr_in loopbackAddr{};
     loopbackAddr.sin_family = AF_INET;
-    loopbackAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
+    loopbackAddr.sin_port = htons(static_cast<u_short>(discoveryPort));
     loopbackAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
     const int mirrorResult = gOriginalSendTo(
@@ -922,7 +932,8 @@ void MirrorUg2BeaconToLoopback(SOCKET socketHandle, const char* payload, int len
 
     if (!gLoopbackMirrorAnnounced.exchange(true))
     {
-        std::cout << "NFSLAN: Same-machine UG2 beacon mirror active on 127.0.0.1:9999.\n";
+        std::cout << "NFSLAN: Same-machine UG2 beacon mirror active on 127.0.0.1:"
+                  << discoveryPort << ".\n";
     }
 
     if (ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 6))
@@ -1187,6 +1198,34 @@ std::array<char, kUg2LanBeaconLength> BuildLanDiscoveryQueryPacket()
     return packet;
 }
 
+bool TryParseIpv4Address(const std::string& text, in_addr* addressOut)
+{
+    if (!addressOut)
+    {
+        return false;
+    }
+
+    const std::string trimmed = TrimAscii(text);
+    if (trimmed.empty())
+    {
+        return false;
+    }
+
+    in_addr parsed{};
+    if (InetPtonA(AF_INET, trimmed.c_str(), &parsed) != 1)
+    {
+        return false;
+    }
+
+    if (parsed.s_addr == htonl(INADDR_ANY))
+    {
+        return false;
+    }
+
+    *addressOut = parsed;
+    return true;
+}
+
 void RunLanDiscoveryLoopbackBridge()
 {
     try
@@ -1206,19 +1245,39 @@ void RunLanDiscoveryLoopbackBridge()
         int allowBroadcast = 1;
         setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&allowBroadcast), sizeof(allowBroadcast));
 
+        const int discoveryPort = (std::max)(1, (std::min)(65535, gLanDiscoveryPort.load()));
+        const std::string configuredDiscoveryAddr = TrimAscii(gLanDiscoveryAddr);
+        in_addr parsedDiscoveryAddr{};
+        bool discoveryAddrFallback = false;
+        if (!TryParseIpv4Address(configuredDiscoveryAddr, &parsedDiscoveryAddr))
+        {
+            parsedDiscoveryAddr.s_addr = htonl(INADDR_LOOPBACK);
+            discoveryAddrFallback = !configuredDiscoveryAddr.empty();
+        }
+
+        const std::string effectiveDiscoveryAddr =
+            discoveryAddrFallback ? "127.0.0.1" : (configuredDiscoveryAddr.empty() ? "127.0.0.1" : configuredDiscoveryAddr);
+
         sockaddr_in serverAddr{};
         serverAddr.sin_family = AF_INET;
-        serverAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
-        serverAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        serverAddr.sin_port = htons(static_cast<u_short>(discoveryPort));
+        serverAddr.sin_addr = parsedDiscoveryAddr;
+
+        sockaddr_in loopbackServerAddr{};
+        loopbackServerAddr.sin_family = AF_INET;
+        loopbackServerAddr.sin_port = htons(static_cast<u_short>(discoveryPort));
+        loopbackServerAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        const bool probeLoopbackAlso =
+            gLocalEmulationEnabled.load() && !EqualsIgnoreCase(effectiveDiscoveryAddr, "127.0.0.1");
 
         sockaddr_in localClientAddr{};
         localClientAddr.sin_family = AF_INET;
-        localClientAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
+        localClientAddr.sin_port = htons(static_cast<u_short>(discoveryPort));
         localClientAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
         sockaddr_in broadcastClientAddr{};
         broadcastClientAddr.sin_family = AF_INET;
-        broadcastClientAddr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
+        broadcastClientAddr.sin_port = htons(static_cast<u_short>(discoveryPort));
         broadcastClientAddr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 
         const auto queryPacket = BuildLanDiscoveryQueryPacket();
@@ -1228,14 +1287,23 @@ void RunLanDiscoveryLoopbackBridge()
         bool loggedBridgePatch = false;
         int silentCycles = 0;
 
+        if (discoveryAddrFallback)
+        {
+            std::cout << "NFSLAN: WARNING - invalid DISCOVERY_ADDR='" << configuredDiscoveryAddr
+                      << "', falling back to 127.0.0.1 for local emulation probe.\n";
+        }
+
+        std::cout << "NFSLAN: LAN bridge probe target " << effectiveDiscoveryAddr
+                  << ":" << discoveryPort << ".\n";
+
         if (gLanDiagEnabled.load())
         {
-            std::cout << "NFSLAN: LAN-DIAG bridge probe enabled on UDP " << kLanDiscoveryPort << ".\n";
+            std::cout << "NFSLAN: LAN-DIAG bridge probe enabled on UDP " << discoveryPort << ".\n";
         }
 
         while (gLanBridgeRunning.load())
         {
-            const int sent = sendto(
+            const int sentPrimary = sendto(
                 sock,
                 queryPacket.data(),
                 static_cast<int>(queryPacket.size()),
@@ -1243,12 +1311,25 @@ void RunLanDiscoveryLoopbackBridge()
                 reinterpret_cast<sockaddr*>(&serverAddr),
                 sizeof(serverAddr));
 
-            if (sent < 0)
+            int sentLoopback = 0;
+            if (probeLoopbackAlso)
+            {
+                sentLoopback = sendto(
+                    sock,
+                    queryPacket.data(),
+                    static_cast<int>(queryPacket.size()),
+                    0,
+                    reinterpret_cast<sockaddr*>(&loopbackServerAddr),
+                    sizeof(loopbackServerAddr));
+            }
+
+            if (sentPrimary < 0 && (!probeLoopbackAlso || sentLoopback < 0))
             {
                 if (!loggedSendError)
                 {
                     loggedSendError = true;
-                    std::cerr << "NFSLAN: WARNING - LAN bridge send failed (WSA error " << WSAGetLastError() << ").\n";
+                    std::cerr << "NFSLAN: WARNING - LAN bridge probe send failed (WSA error "
+                              << WSAGetLastError() << ").\n";
                 }
                 ++silentCycles;
                 Sleep(1000);
@@ -1336,7 +1417,7 @@ void RunLanDiscoveryLoopbackBridge()
                 if (!loggedFirstResponse)
                 {
                     loggedFirstResponse = true;
-                    std::cout << "NFSLAN: Same-machine LAN bridge active on UDP " << kLanDiscoveryPort << ".\n";
+                    std::cout << "NFSLAN: Same-machine LAN bridge active on UDP " << discoveryPort << ".\n";
                 }
             }
 
@@ -1349,7 +1430,7 @@ void RunLanDiscoveryLoopbackBridge()
                 ++silentCycles;
                 if (silentCycles == 5)
                 {
-                    std::cout << "NFSLAN: WARNING - no LAN discovery replies seen on loopback yet.\n";
+                    std::cout << "NFSLAN: WARNING - no LAN discovery replies seen on emulation probe yet.\n";
                 }
             }
 
@@ -1397,39 +1478,44 @@ void StopLanDiscoveryLoopbackBridge()
     }
 }
 
-void LogLanDiscoveryPortDiagnostic()
+void LogLanDiscoveryPortDiagnostic(int discoveryPort)
 {
     try
     {
+        const int diagnosticPort = (std::max)(1, (std::min)(65535, discoveryPort));
         WSASession wsaSession;
         SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (sock == INVALID_SOCKET)
         {
-            std::cout << "NFSLAN: WARNING - UDP 9999 diagnostic socket creation failed (WSA error "
+            std::cout << "NFSLAN: WARNING - UDP " << diagnosticPort
+                      << " diagnostic socket creation failed (WSA error "
                       << WSAGetLastError() << ").\n";
             return;
         }
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
-        addr.sin_port = htons(static_cast<u_short>(kLanDiscoveryPort));
+        addr.sin_port = htons(static_cast<u_short>(diagnosticPort));
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
         const int bindResult = bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
         if (bindResult == 0)
         {
-            std::cout << "NFSLAN: UDP 9999 appears free for local client discovery bind.\n";
+            std::cout << "NFSLAN: UDP " << diagnosticPort
+                      << " appears free for local client discovery bind.\n";
         }
         else
         {
             const int err = WSAGetLastError();
             if (err == WSAEADDRINUSE)
             {
-                std::cout << "NFSLAN: UDP 9999 is already in use (expected when server discovery socket is active).\n";
+                std::cout << "NFSLAN: UDP " << diagnosticPort
+                          << " is already in use (expected when server discovery socket is active).\n";
             }
             else
             {
-                std::cout << "NFSLAN: UDP 9999 diagnostic bind failed (WSA error " << err << ").\n";
+                std::cout << "NFSLAN: UDP " << diagnosticPort
+                          << " diagnostic bind failed (WSA error " << err << ").\n";
             }
         }
 
@@ -1437,7 +1523,7 @@ void LogLanDiscoveryPortDiagnostic()
     }
     catch (const std::exception& ex)
     {
-        std::cout << "NFSLAN: WARNING - UDP 9999 diagnostic failed: " << ex.what() << '\n';
+        std::cout << "NFSLAN: WARNING - UDP discovery diagnostic failed: " << ex.what() << '\n';
     }
 }
 
@@ -1502,6 +1588,7 @@ void PrintUsage()
         << "  -n              Disable binary patching\n"
         << "  --same-machine  Force same-PC host mode (sets FORCE_LOCAL and addr fixups)\n"
         << "  --local-host    Alias for --same-machine\n"
+        << "  --local-emulation  Enable discovery emulation bridge in worker\n"
         << "  --u2-mode N     Underground 2 StartServer mode (0..13)\n"
         << "  --diag-lan      Enable deep LAN discovery diagnostics\n";
 }
@@ -1527,6 +1614,10 @@ bool ParseWorkerLaunchOptions(int argc, char* argv[], WorkerLaunchOptions* optio
         else if (arg == "--same-machine" || arg == "--local-host")
         {
             options.sameMachineMode = true;
+        }
+        else if (arg == "--local-emulation" || arg == "--network-emulation")
+        {
+            options.localEmulation = true;
         }
         else if (arg == "--u2-mode")
         {
@@ -1566,6 +1657,8 @@ bool ApplyServerConfigCompatibility(
     WorkerResolvedSettings* resolvedOut)
 {
     WorkerResolvedSettings resolved{};
+    resolved.sameMachineMode = options.sameMachineMode;
+    resolved.localEmulation = options.localEmulation;
     resolved.lanDiag = options.lanDiag;
     if (underground2Server && options.u2Mode.has_value())
     {
@@ -1594,6 +1687,11 @@ bool ApplyServerConfigCompatibility(
         IsTruthy(GetConfigValue(configText, "LAN_DIAG").value_or("0"))
         || IsTruthy(GetConfigValue(configText, "LAN_DIAGNOSTICS").value_or("0"));
     resolved.lanDiag = options.lanDiag || lanDiagFromConfig;
+    const bool localEmulationFromConfig =
+        IsTruthy(GetConfigValue(configText, "LOCAL_EMULATION").value_or("0"))
+        || IsTruthy(GetConfigValue(configText, "LOCAL_NET_EMULATION").value_or("0"));
+    resolved.localEmulation = options.localEmulation || localEmulationFromConfig;
+    resolved.sameMachineMode = resolved.sameMachineMode || resolved.localEmulation;
 
     bool changed = false;
     std::cout << "NFSLAN: Detected server profile: " << (underground2Server ? "Underground 2" : "Most Wanted") << '\n';
@@ -1617,7 +1715,7 @@ bool ApplyServerConfigCompatibility(
     const std::string portValue = EnsureConfigValue(&configText, "PORT", "9900", &changed);
     std::string addrValue = EnsureConfigValue(&configText, "ADDR", "0.0.0.0", &changed);
 
-    if (options.sameMachineMode)
+    if (resolved.sameMachineMode)
     {
         if (!EqualsIgnoreCase(TrimAscii(addrValue), "127.0.0.1"))
         {
@@ -1644,6 +1742,13 @@ bool ApplyServerConfigCompatibility(
             ForceConfigValue(&configText, "APORT", portValue, &changed);
             std::cout << "NFSLAN: Same-machine mode enabled -> UG2 endpoints forced to loopback.\n";
         }
+    }
+
+    if (resolved.localEmulation && !IsTruthy(GetConfigValue(configText, "LOCAL_EMULATION").value_or("0")))
+    {
+        configText = UpsertConfigValue(configText, "LOCAL_EMULATION", "1");
+        changed = true;
+        std::cout << "NFSLAN: LOCAL_EMULATION=1 enabled.\n";
     }
 
     if (resolved.lanDiag && !IsTruthy(GetConfigValue(configText, "LAN_DIAG").value_or("0")))
@@ -1700,7 +1805,7 @@ bool ApplyServerConfigCompatibility(
             std::cout << "NFSLAN: Added ENABLE_GAME_ADDR_FIXUPS=1 (recommended for MW).\n";
         }
 
-        if (options.sameMachineMode && !IsTruthy(GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS").value_or("0")))
+        if (resolved.sameMachineMode && !IsTruthy(GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS").value_or("0")))
         {
             configText = UpsertConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS", "1");
             changed = true;
@@ -1731,6 +1836,61 @@ bool ApplyServerConfigCompatibility(
         }
     }
 
+    int discoveryPort = kDefaultLanDiscoveryPort;
+    const std::string discoveryPortValue = TrimAscii(GetConfigValue(configText, "DISCOVERY_PORT").value_or(""));
+    if (!discoveryPortValue.empty())
+    {
+        if (!TryParseIntRange(discoveryPortValue, 1, 65535, &discoveryPort))
+        {
+            discoveryPort = kDefaultLanDiscoveryPort;
+            std::cout << "NFSLAN: WARNING - invalid DISCOVERY_PORT='" << discoveryPortValue
+                      << "', forcing DISCOVERY_PORT=" << kDefaultLanDiscoveryPort << ".\n";
+            configText = UpsertConfigValue(configText, "DISCOVERY_PORT", std::to_string(kDefaultLanDiscoveryPort));
+            changed = true;
+        }
+    }
+    else if (resolved.localEmulation)
+    {
+        configText = UpsertConfigValue(configText, "DISCOVERY_PORT", std::to_string(kDefaultLanDiscoveryPort));
+        changed = true;
+        std::cout << "NFSLAN: Added DISCOVERY_PORT=" << kDefaultLanDiscoveryPort << '\n';
+    }
+
+    std::string discoveryAddr = TrimAscii(GetConfigValue(configText, "DISCOVERY_ADDR").value_or(""));
+    if (discoveryAddr.empty())
+    {
+        discoveryAddr = resolved.sameMachineMode ? "127.0.0.1" : TrimAscii(addrValue);
+        if (discoveryAddr.empty()
+            || EqualsIgnoreCase(discoveryAddr, "0.0.0.0")
+            || discoveryAddr.find("%%bind(") != std::string::npos)
+        {
+            discoveryAddr = "127.0.0.1";
+        }
+
+        if (resolved.localEmulation)
+        {
+            configText = UpsertConfigValue(configText, "DISCOVERY_ADDR", discoveryAddr);
+            changed = true;
+            std::cout << "NFSLAN: Added DISCOVERY_ADDR=" << discoveryAddr << '\n';
+        }
+    }
+
+    uint8_t discoveryOctets[4] = {};
+    if (!ParseIpv4(discoveryAddr, discoveryOctets))
+    {
+        std::cout << "NFSLAN: WARNING - DISCOVERY_ADDR='" << discoveryAddr
+                  << "' is not a concrete IPv4 address, using 127.0.0.1 for bridge probe.\n";
+        discoveryAddr = "127.0.0.1";
+        if (resolved.localEmulation)
+        {
+            configText = UpsertConfigValue(configText, "DISCOVERY_ADDR", discoveryAddr);
+            changed = true;
+        }
+    }
+
+    resolved.discoveryPort = discoveryPort;
+    resolved.discoveryAddr = discoveryAddr;
+
     const auto cfg = [&](const std::string& key) -> std::string
     {
         return TrimAscii(GetConfigValue(configText, key).value_or(""));
@@ -1739,6 +1899,12 @@ bool ApplyServerConfigCompatibility(
     std::cout << "NFSLAN: Effective ADDR/PORT: " << cfg("ADDR") << ":" << cfg("PORT") << '\n';
     std::cout << "NFSLAN: Effective lobby ident: LOBBY_IDENT=" << cfg("LOBBY_IDENT")
               << " LOBBY=" << cfg("LOBBY") << '\n';
+    std::cout << "NFSLAN: Effective local emulation: " << (resolved.localEmulation ? "enabled" : "disabled") << '\n';
+    if (resolved.localEmulation || resolved.sameMachineMode)
+    {
+        std::cout << "NFSLAN: Effective discovery probe endpoint: "
+                  << resolved.discoveryAddr << ":" << resolved.discoveryPort << '\n';
+    }
     if (underground2Server)
     {
         std::cout << "NFSLAN: Effective UG2 endpoints: M=" << cfg("MADDR") << ":" << cfg("MPORT")
@@ -1785,19 +1951,19 @@ bool ApplyServerConfigCompatibility(
     {
         std::cout << "NFSLAN: NOTE - ADDR=0.0.0.0 is fine for local bind, but internet clients need a public endpoint.\n";
     }
-    else if (!options.sameMachineMode && LooksPrivateOrNonRoutableIpv4(addrValue))
+    else if (!resolved.sameMachineMode && LooksPrivateOrNonRoutableIpv4(addrValue))
     {
         std::cout << "NFSLAN: NOTE - ADDR=" << addrValue
                   << " is private/non-routable; remote internet players will not reach this directly.\n";
     }
-    else if (!options.sameMachineMode && addrValue.find("%%bind(") != std::string::npos)
+    else if (!resolved.sameMachineMode && addrValue.find("%%bind(") != std::string::npos)
     {
         std::cout
             << "NFSLAN: NOTE - ADDR uses %%bind(...), which usually resolves to a LAN IP. "
             << "Use a public IP/DNS for internet hosting.\n";
     }
 
-    if (options.sameMachineMode && portValue == "9900")
+    if (resolved.sameMachineMode && portValue == "9900")
     {
         std::cout << "NFSLAN: NOTE - Same-machine mode with PORT=9900 can still conflict on some client patches. "
                      "Try a different server PORT if local client cannot see/join.\n";
@@ -2159,6 +2325,7 @@ void SigInterruptHandler(int signum)
     }
     ReleaseServerIdentityLock();
     gSameMachineModeEnabled.store(false);
+    gLocalEmulationEnabled.store(false);
     exit(signum);
 }
 
@@ -2175,10 +2342,17 @@ int NFSLANWorkerMain(int argc, char* argv[])
 
     bDisablePatching = options.disablePatching;
     gSameMachineModeEnabled.store(options.sameMachineMode);
+    gLocalEmulationEnabled.store(options.localEmulation);
+    gLanDiscoveryPort.store(kDefaultLanDiscoveryPort);
+    gLanDiscoveryAddr = "127.0.0.1";
     gLoopbackMirrorAnnounced.store(false);
     if (options.sameMachineMode)
     {
         std::cout << "NFSLAN: Same-machine mode enabled.\n";
+    }
+    if (options.localEmulation)
+    {
+        std::cout << "NFSLAN: Local discovery emulation requested from CLI.\n";
     }
     if (options.lanDiag)
     {
@@ -2225,6 +2399,21 @@ int NFSLANWorkerMain(int argc, char* argv[])
     if (!ApplyServerConfigCompatibility(options, underground2Server, &resolved))
     {
         return -1;
+    }
+
+    gSameMachineModeEnabled.store(resolved.sameMachineMode);
+    gLocalEmulationEnabled.store(resolved.localEmulation);
+    gLanDiscoveryPort.store(resolved.discoveryPort);
+    gLanDiscoveryAddr = resolved.discoveryAddr;
+
+    if (resolved.sameMachineMode && !options.sameMachineMode)
+    {
+        std::cout << "NFSLAN: Same-machine mode enabled from config/runtime normalization.\n";
+    }
+    if (resolved.localEmulation)
+    {
+        std::cout << "NFSLAN: Local discovery emulation active ("
+                  << resolved.discoveryAddr << ":" << resolved.discoveryPort << ").\n";
     }
 
     gPreferredServerName = TrimAscii(options.serverName);
@@ -2281,16 +2470,21 @@ int NFSLANWorkerMain(int argc, char* argv[])
         return -1;
     }
 
-    if (options.sameMachineMode)
+    if (resolved.sameMachineMode || resolved.localEmulation)
     {
-        LogLanDiscoveryPortDiagnostic();
+        LogLanDiscoveryPortDiagnostic(resolved.discoveryPort);
     }
 
     const bool useLanBridge =
-        options.sameMachineMode && (!underground2Server || !sendToHookInstalled);
-    if (options.sameMachineMode && underground2Server && sendToHookInstalled)
+        resolved.localEmulation
+        || (resolved.sameMachineMode && (!underground2Server || !sendToHookInstalled));
+    if (!resolved.localEmulation && resolved.sameMachineMode && underground2Server && sendToHookInstalled)
     {
         std::cout << "NFSLAN: Same-machine UG2 discovery uses sendto loopback mirror (bridge disabled).\n";
+    }
+    if (resolved.localEmulation && underground2Server && sendToHookInstalled)
+    {
+        std::cout << "NFSLAN: Local emulation keeps LAN bridge enabled even with UG2 sendto hook.\n";
     }
     StartLanDiscoveryLoopbackBridge(useLanBridge);
 
@@ -2298,6 +2492,7 @@ int NFSLANWorkerMain(int argc, char* argv[])
     while (IsServerRunning()) { Sleep(1); }
     StopLanDiscoveryLoopbackBridge();
     gSameMachineModeEnabled.store(false);
+    gLocalEmulationEnabled.store(false);
     if (IsServerRunning())
     {
         std::cout << "NFSLAN: Stopping server...\n";

@@ -23,6 +23,8 @@ Do not run server directly from your game installation folder; use a separate se
 5. Configure `PORT` and `ADDR` fields.
 6. Configure compatibility flags:
    - `FORCE_LOCAL`: enable when hosting and playing from the same machine (UI also switches `ADDR` to `127.0.0.1`)
+   - `LOCAL_EMULATION`: enables worker-side LAN discovery emulation bridge (`--local-emulation`)
+   - `DISCOVERY_ADDR`/`DISCOVERY_PORT`: emulation probe endpoint (defaults to `127.0.0.1:9999` in local mode)
    - `ENABLE_GAME_ADDR_FIXUPS`: keep enabled (recommended for mixed local/public address setups)
    - `LAN_DIAG`: optional deep LAN discovery diagnostics (verbose packet-level logs)
    - `U2_START_MODE`: Underground 2-only StartServer mode (`0..13`, default `0`)
@@ -42,6 +44,7 @@ Do not run server directly from your game installation folder; use a separate se
 - Qt launcher mode: same as above depending on your build options.
 - Console worker also supports `--same-machine` (`--local-host` alias) to force same-PC compatibility values in `server.cfg`.
 - Console worker options:
+  - `--local-emulation`: enable local LAN discovery emulation bridge (same effect as `LOCAL_EMULATION=1`)
   - `--u2-mode <0..13>`: sets UG2 StartServer mode and writes `U2_START_MODE`.
   - `--diag-lan`: enables deep LAN diagnostics (same as `LAN_DIAG=1`).
 - Worker applies profile-specific config normalization:
@@ -65,8 +68,9 @@ For internet hosting:
 If the host also runs the game client on the same Windows machine:
 
 - Enable `FORCE_LOCAL`.
+- Enable `LOCAL_EMULATION` (or launch with `--local-emulation`).
 - Keep `ENABLE_GAME_ADDR_FIXUPS=1`.
-- Use `--same-machine` from worker/GUI so the local LAN discovery loopback bridge is enabled.
+- Use `--same-machine` from worker/GUI so local bind/address keys are forced to loopback.
 - If local client still cannot find/join, test a non-default `PORT` instead of `9900` to avoid client/server UDP bind conflicts in some patch sets.
 
 ## Preflight validation

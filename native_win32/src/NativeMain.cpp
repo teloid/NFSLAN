@@ -35,7 +35,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-11-native-ui-ultimate-1";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-11-native-ui-localemu-1";
 constexpr int kGameProfileMostWanted = 0;
 constexpr int kGameProfileUnderground2 = 1;
 
@@ -51,6 +51,7 @@ enum ControlId : int
     kIdAddr,
     kIdU2StartMode,
     kIdForceLocal,
+    kIdLocalEmulation,
     kIdEnableAddrFixups,
     kIdLanDiag,
     kIdDisablePatching,
@@ -74,6 +75,7 @@ struct AppState
     HWND addrEdit = nullptr;
     HWND u2StartModeEdit = nullptr;
     HWND forceLocalCheck = nullptr;
+    HWND localEmulationCheck = nullptr;
     HWND enableAddrFixupsCheck = nullptr;
     HWND lanDiagCheck = nullptr;
     HWND disablePatchingCheck = nullptr;
@@ -900,6 +902,43 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
         }
     }
 
+    const bool localEmulationEnabled =
+        parseBoolConfigValue(getConfigValue(configText, L"LOCAL_EMULATION"), false);
+    if (localEmulationEnabled)
+    {
+        int discoveryPort = 9999;
+        const std::wstring discoveryPortText = trim(getConfigValue(configText, L"DISCOVERY_PORT"));
+        if (!discoveryPortText.empty())
+        {
+            if (!tryParseIntRange(discoveryPortText, 1, 65535, &discoveryPort))
+            {
+                errors.push_back(L"DISCOVERY_PORT must be an integer in range 1..65535 when LOCAL_EMULATION is enabled.");
+            }
+        }
+
+        const std::wstring discoveryAddr = trim(getConfigValue(configText, L"DISCOVERY_ADDR"));
+        if (discoveryAddr.empty())
+        {
+            warnings.push_back(L"LOCAL_EMULATION is enabled but DISCOVERY_ADDR is empty; worker will auto-fallback to 127.0.0.1.");
+        }
+        else if (equalCaseInsensitive(discoveryAddr, L"0.0.0.0"))
+        {
+            warnings.push_back(L"DISCOVERY_ADDR=0.0.0.0 is not probeable; worker will fallback to 127.0.0.1.");
+        }
+
+        if (discoveryPort != 9999)
+        {
+            warnings.push_back(
+                L"DISCOVERY_PORT is not 9999. NFS LAN discovery usually expects UDP 9999.");
+        }
+
+        if (!equalCaseInsensitive(addr, L"127.0.0.1"))
+        {
+            warnings.push_back(
+                L"LOCAL_EMULATION works best with ADDR=127.0.0.1 (same-machine loopback hosting).");
+        }
+    }
+
     if (port > 0 && !lobbyIdent.empty())
     {
         if (isServerIdentityLockedLocally(lobbyIdent, port))
@@ -985,6 +1024,7 @@ void setUiRunningState(bool running)
     EnableWindow(g_app.portEdit, running ? FALSE : TRUE);
     EnableWindow(g_app.addrEdit, running ? FALSE : TRUE);
     EnableWindow(g_app.forceLocalCheck, running ? FALSE : TRUE);
+    EnableWindow(g_app.localEmulationCheck, running ? FALSE : TRUE);
     EnableWindow(g_app.enableAddrFixupsCheck, running ? FALSE : TRUE);
     EnableWindow(g_app.lanDiagCheck, running ? FALSE : TRUE);
     EnableWindow(g_app.disablePatchingCheck, running ? FALSE : TRUE);
@@ -1058,6 +1098,9 @@ void syncFieldsFromConfigEditor()
     const bool forceLocalEnabled = parseBoolConfigValue(getConfigValue(configText, L"FORCE_LOCAL"), false);
     SendMessageW(g_app.forceLocalCheck, BM_SETCHECK, forceLocalEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
+    const bool localEmulationEnabled = parseBoolConfigValue(getConfigValue(configText, L"LOCAL_EMULATION"), false);
+    SendMessageW(g_app.localEmulationCheck, BM_SETCHECK, localEmulationEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+
     const bool addrFixupsEnabled = parseBoolConfigValue(getConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS"), true);
     SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, addrFixupsEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
@@ -1105,11 +1148,30 @@ void applyFieldsToConfigEditor()
     const bool forceLocalEnabled = (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     configText = upsertConfigValue(configText, L"FORCE_LOCAL", forceLocalEnabled ? L"1" : L"0");
 
+    const bool localEmulationEnabled = (SendMessageW(g_app.localEmulationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    configText = upsertConfigValue(configText, L"LOCAL_EMULATION", localEmulationEnabled ? L"1" : L"0");
+
     const bool addrFixupsEnabled = (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     configText = upsertConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS", addrFixupsEnabled ? L"1" : L"0");
 
     const bool lanDiagEnabled = (SendMessageW(g_app.lanDiagCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     configText = upsertConfigValue(configText, L"LAN_DIAG", lanDiagEnabled ? L"1" : L"0");
+
+    if (localEmulationEnabled)
+    {
+        configText = upsertConfigValue(configText, L"DISCOVERY_PORT", L"9999");
+
+        std::wstring discoveryAddr = trim(getConfigValue(configText, L"DISCOVERY_ADDR"));
+        if (discoveryAddr.empty() || equalCaseInsensitive(discoveryAddr, L"0.0.0.0"))
+        {
+            discoveryAddr = forceLocalEnabled ? L"127.0.0.1" : addrValue;
+            if (discoveryAddr.empty() || equalCaseInsensitive(discoveryAddr, L"0.0.0.0"))
+            {
+                discoveryAddr = L"127.0.0.1";
+            }
+            configText = upsertConfigValue(configText, L"DISCOVERY_ADDR", discoveryAddr);
+        }
+    }
 
     setWindowTextString(g_app.configEditor, configText);
 }
@@ -1411,6 +1473,11 @@ void startWorker()
         commandLine += L" --same-machine";
     }
 
+    if (SendMessageW(g_app.localEmulationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED)
+    {
+        commandLine += L" --local-emulation";
+    }
+
     if (SendMessageW(g_app.lanDiagCheck, BM_GETCHECK, 0, 0) == BST_CHECKED)
     {
         commandLine += L" --diag-lan";
@@ -1512,6 +1579,11 @@ void saveSettings()
         path.c_str());
     WritePrivateProfileStringW(
         L"launcher",
+        L"localEmulation",
+        (SendMessageW(g_app.localEmulationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
+        path.c_str());
+    WritePrivateProfileStringW(
+        L"launcher",
         L"enableAddrFixups",
         (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
         path.c_str());
@@ -1555,6 +1627,11 @@ void loadSettings()
         g_app.forceLocalCheck,
         BM_SETCHECK,
         (readIniValue(L"forceLocal", L"0") == L"1") ? BST_CHECKED : BST_UNCHECKED,
+        0);
+    SendMessageW(
+        g_app.localEmulationCheck,
+        BM_SETCHECK,
+        (readIniValue(L"localEmulation", L"0") == L"1") ? BST_CHECKED : BST_UNCHECKED,
         0);
     SendMessageW(
         g_app.enableAddrFixupsCheck,
@@ -1849,7 +1926,7 @@ void createUi(HWND window)
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         left + 470,
         y,
-        230,
+        220,
         rowHeight,
         window,
         reinterpret_cast<HMENU>(kIdForceLocal),
@@ -1858,12 +1935,30 @@ void createUi(HWND window)
     applyDefaultFontToWindow(g_app.forceLocalCheck);
     SendMessageW(g_app.forceLocalCheck, BM_SETCHECK, BST_UNCHECKED, 0);
 
+    g_app.localEmulationCheck = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"Local emulation bridge (--local-emulation)",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        left + 690,
+        y,
+        270,
+        rowHeight,
+        window,
+        reinterpret_cast<HMENU>(kIdLocalEmulation),
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.localEmulationCheck);
+    SendMessageW(g_app.localEmulationCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+
+    y += rowHeight + rowGap;
+
     g_app.enableAddrFixupsCheck = CreateWindowExW(
         0,
         L"BUTTON",
         L"ENABLE_GAME_ADDR_FIXUPS",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        left + 710,
+        left,
         y,
         250,
         rowHeight,
@@ -1874,14 +1969,12 @@ void createUi(HWND window)
     applyDefaultFontToWindow(g_app.enableAddrFixupsCheck);
     SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, BST_CHECKED, 0);
 
-    y += rowHeight + rowGap;
-
     g_app.disablePatchingCheck = CreateWindowExW(
         0,
         L"BUTTON",
         L"Disable binary patching (-n)",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        left,
+        left + 270,
         y,
         260,
         rowHeight,
@@ -2031,13 +2124,38 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
             const bool enabled = (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
             if (enabled)
             {
+                SendMessageW(g_app.localEmulationCheck, BM_SETCHECK, BST_CHECKED, 0);
                 SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, BST_CHECKED, 0);
                 setWindowTextString(g_app.addrEdit, L"127.0.0.1");
-                appendLogLine(L"Same-machine mode enabled: FORCE_LOCAL=1, ADDR=127.0.0.1, ENABLE_GAME_ADDR_FIXUPS=1");
+                appendLogLine(
+                    L"Same-machine mode enabled: FORCE_LOCAL=1, LOCAL_EMULATION=1, "
+                    L"ADDR=127.0.0.1, ENABLE_GAME_ADDR_FIXUPS=1");
             }
             else
             {
                 appendLogLine(L"Same-machine mode disabled in UI.");
+            }
+            applyFieldsToConfigEditor();
+        }
+        return 0;
+
+    case kIdLocalEmulation:
+        if (commandCode == BN_CLICKED)
+        {
+            const bool enabled = (SendMessageW(g_app.localEmulationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            if (enabled)
+            {
+                SendMessageW(g_app.forceLocalCheck, BM_SETCHECK, BST_CHECKED, 0);
+                SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, BST_CHECKED, 0);
+                if (!equalCaseInsensitive(trim(getWindowTextString(g_app.addrEdit)), L"127.0.0.1"))
+                {
+                    setWindowTextString(g_app.addrEdit, L"127.0.0.1");
+                }
+                appendLogLine(L"Local emulation enabled: LOCAL_EMULATION=1, FORCE_LOCAL=1, DISCOVERY_PORT=9999.");
+            }
+            else
+            {
+                appendLogLine(L"Local emulation disabled in UI.");
             }
             applyFieldsToConfigEditor();
         }

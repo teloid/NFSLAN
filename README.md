@@ -13,7 +13,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 - Native Win32 relay app (`NFSLAN-Relay`) for cross-subnet/cross-site LAN discovery forwarding (UG2/MW style UDP `9999` broadcast relay)
 - Native Win32 relay app includes beacon capture/diff workflow (in-game sample vs standalone sample) with detailed report export
 - Relay capture path includes UDP bind + raw fallback sniff mode when `9999` is already occupied (admin recommended)
-- Native Win32 launcher includes explicit `FORCE_LOCAL` and `ENABLE_GAME_ADDR_FIXUPS` toggles for same-machine host+client scenarios
+- Native Win32 launcher includes explicit `FORCE_LOCAL`, `LOCAL_EMULATION`, and `ENABLE_GAME_ADDR_FIXUPS` toggles for same-machine host+client scenarios
 - Native Win32 launcher includes `U2_START_MODE` (`0..13`) and `LAN_DIAG` controls with profile-aware preflight validation before launch
 - Native Win32 launcher preflight now blocks local port conflicts (`UDP 9999`, service UDP/TCP `PORT`) and duplicate server identity (`LOBBY_IDENT` + `PORT`)
 - Native Win32 launcher logs build tag, executable path, worker launch mode, and effective profile/runtime paths at startup
@@ -23,6 +23,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 - Existing injector/hooking code used by the worker for Most Wanted patching
 - Worker-side MW/UG2 config normalization and game-report file header validation (`gamefile.bin` / `gameplay.bin`)
 - Worker now auto-fills missing `LOBBY_IDENT`/`LOBBY` defaults (`NFSU2NA` for UG2, `NFSMWNA` for MW) and can run a same-machine LAN discovery loopback bridge on UDP `9999`
+- Worker supports `LOCAL_EMULATION`/`--local-emulation` with configurable discovery probe endpoint (`DISCOVERY_ADDR`/`DISCOVERY_PORT`)
 - Worker supports `--u2-mode` and `--diag-lan` for UG2 mode control and deep LAN packet diagnostics
 - Worker enforces the same server identity lock and includes UG2 beacon field normalization + packet diff diagnostics (`field-diff`, `byte-diff offsets`)
 
@@ -46,7 +47,7 @@ Native Linux loading of this `server.dll` is not available in this project becau
 2. Place game `server.dll` and `server.cfg` in a server folder.
 3. Open `NFSLAN-GUI`, choose game profile, set server name/path, and start.
 4. If needed for cross-subnet discovery, click `Relay tool` in the same app to open embedded `NFSLAN-Relay` mode (`--relay-ui`).
-5. If host and client run on the same PC, enable `FORCE_LOCAL` and keep `ENABLE_GAME_ADDR_FIXUPS` enabled.
+5. If host and client run on the same PC, enable `FORCE_LOCAL` and `LOCAL_EMULATION`, then keep `ENABLE_GAME_ADDR_FIXUPS` enabled.
 6. On Linux/macOS, install a Windows compatibility runtime and run the Windows build via Proton/Wine, or use the Qt launcher path.
 
 ## Documentation
