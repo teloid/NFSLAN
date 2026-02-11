@@ -272,14 +272,21 @@ bool patchSelfFilterFlags(HANDLE process, std::uintptr_t imageBase, std::uint64_
         const std::uintptr_t entry = static_cast<std::uintptr_t>(entriesStart) + i * kLanEntryStride;
 
         std::uint8_t active = 0;
-        if (!readRemote(process, entry + kLanEntryActiveOffset, &active) || active == 0)
+        if (!readRemote(process, entry + kLanEntryActiveOffset, &active))
         {
             continue;
         }
-        ++info.activeCount;
+        if (active != 0)
+        {
+            ++info.activeCount;
+        }
 
         std::uint32_t ready = 0;
-        if (readRemote(process, entry + kLanEntryReadyOffset, &ready) && ready != 0)
+        if (!readRemote(process, entry + kLanEntryReadyOffset, &ready))
+        {
+            continue;
+        }
+        if (ready != 0)
         {
             ++info.readyCount;
         }

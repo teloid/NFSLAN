@@ -978,12 +978,27 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
         }
         else
         {
+            const bool sameMachineEnabled = (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            const bool allowBusyDiscoveryPort = sameMachineEnabled || localEmulationEnabled;
             int udp9999Err = 0;
             if (isPortBusyLocalBind(SOCK_DGRAM, IPPROTO_UDP, 9999, &udp9999Err))
             {
-                errors.push_back(
-                    L"UDP port 9999 is already in use locally (WSA " + std::to_wstring(udp9999Err)
-                    + L"). Stop in-game host/server or conflicting relay before launching.");
+                const std::wstring details =
+                    L"UDP port 9999 is already in use locally (WSA " + std::to_wstring(udp9999Err) + L").";
+
+                if (allowBusyDiscoveryPort)
+                {
+                    warnings.push_back(
+                        details
+                        + L" Continuing because same-machine/local-emulation mode is enabled. "
+                          L"Client discovery can still be unreliable while another process owns 9999.");
+                }
+                else
+                {
+                    errors.push_back(
+                        details
+                        + L" Stop in-game host/server or conflicting relay before launching.");
+                }
             }
 
             const uint16_t servicePort = static_cast<uint16_t>(port);
