@@ -122,6 +122,8 @@ Use this when you need a precise packet-level comparison between the game-hosted
 6. Click `Save Diff` (writes `relay-beacon-diff.txt` next to the EXE) or `Copy Diff`.
 
 Capture mode binds the listen UDP port directly, so it cannot run while relay forwarding is active.
+If UDP `9999` is already occupied (for example by game search), relay now tries raw fallback sniff mode; run as Administrator for best results.
+Default capture timeout is 60 seconds.
 
 The report includes:
 - key field comparison (`ident`, `name`, `stats`, transport block)

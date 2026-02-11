@@ -7,6 +7,7 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mstcpip.h>
 #include <windows.h>
 
 #include <algorithm>
@@ -34,7 +35,7 @@ constexpr UINT WM_APP_RELAY_LOG = WM_APP + 20;
 constexpr UINT WM_APP_RELAY_STATUS = WM_APP + 21;
 constexpr UINT WM_APP_RELAY_STOPPED = WM_APP + 22;
 constexpr UINT WM_APP_CAPTURE_DONE = WM_APP + 23;
-constexpr int kDefaultCaptureTimeoutMs = 12000;
+constexpr int kDefaultCaptureTimeoutMs = 60000;
 constexpr size_t kBeaconFieldIdentOffset = 0x08;
 constexpr size_t kBeaconFieldIdentMax = 0x08;
 constexpr size_t kBeaconFieldNameOffset = 0x28;
@@ -444,6 +445,125 @@ bool looksLikeLanDiscoveryPayload(const std::vector<uint8_t>& payload)
     {
         return false;
     }
+    return true;
+}
+
+bool pickPrimaryIpv4Address(uint32_t* addressOut)
+{
+    char hostname[256] = {};
+    if (gethostname(hostname, static_cast<int>(sizeof(hostname))) == SOCKET_ERROR)
+    {
+        return false;
+    }
+
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+
+    addrinfo* result = nullptr;
+    if (getaddrinfo(hostname, nullptr, &hints, &result) != 0 || !result)
+    {
+        return false;
+    }
+
+    uint32_t fallbackAddress = 0;
+    for (addrinfo* current = result; current; current = current->ai_next)
+    {
+        if (!current->ai_addr || current->ai_addrlen < static_cast<int>(sizeof(sockaddr_in)))
+        {
+            continue;
+        }
+
+        const auto* address = reinterpret_cast<const sockaddr_in*>(current->ai_addr);
+        if (address->sin_addr.s_addr == 0)
+        {
+            continue;
+        }
+
+        if (fallbackAddress == 0)
+        {
+            fallbackAddress = address->sin_addr.s_addr;
+        }
+
+        if (address->sin_addr.s_addr != htonl(INADDR_LOOPBACK))
+        {
+            *addressOut = address->sin_addr.s_addr;
+            freeaddrinfo(result);
+            return true;
+        }
+    }
+
+    freeaddrinfo(result);
+    if (fallbackAddress == 0)
+    {
+        return false;
+    }
+
+    *addressOut = fallbackAddress;
+    return true;
+}
+
+bool tryExtractLanDiscoveryFromRawIp(
+    const uint8_t* frame,
+    int frameLength,
+    uint16_t listenPort,
+    BeaconSample* sampleOut)
+{
+    if (!frame || frameLength < 28)
+    {
+        return false;
+    }
+
+    const uint8_t version = static_cast<uint8_t>(frame[0] >> 4);
+    const size_t ipHeaderLength = static_cast<size_t>(frame[0] & 0x0F) * 4u;
+    if (version != 4 || ipHeaderLength < 20 || frameLength < static_cast<int>(ipHeaderLength + sizeof(UdpHeader)))
+    {
+        return false;
+    }
+
+    if (frame[9] != static_cast<uint8_t>(IPPROTO_UDP))
+    {
+        return false;
+    }
+
+    const auto* ip = reinterpret_cast<const Ipv4Header*>(frame);
+    const auto* udp = reinterpret_cast<const UdpHeader*>(frame + ipHeaderLength);
+    const uint16_t sourcePort = ntohs(udp->sourcePort);
+    const uint16_t destinationPort = ntohs(udp->destinationPort);
+    if (sourcePort != listenPort && destinationPort != listenPort)
+    {
+        return false;
+    }
+
+    int udpLength = static_cast<int>(ntohs(udp->length));
+    if (udpLength < static_cast<int>(sizeof(UdpHeader)))
+    {
+        return false;
+    }
+
+    int payloadLength = udpLength - static_cast<int>(sizeof(UdpHeader));
+    const int framePayloadMax = frameLength - static_cast<int>(ipHeaderLength + sizeof(UdpHeader));
+    if (payloadLength > framePayloadMax)
+    {
+        payloadLength = framePayloadMax;
+    }
+    if (payloadLength <= 0)
+    {
+        return false;
+    }
+
+    std::vector<uint8_t> payload(payloadLength);
+    std::memcpy(payload.data(), frame + ipHeaderLength + sizeof(UdpHeader), static_cast<size_t>(payloadLength));
+    if (!looksLikeLanDiscoveryPayload(payload))
+    {
+        return false;
+    }
+
+    sampleOut->payload = std::move(payload);
+    sampleOut->sourceIp = ip->sourceAddress;
+    sampleOut->sourcePort = sourcePort;
+    sampleOut->capturedAt = nowTimestamp();
     return true;
 }
 
@@ -1201,71 +1321,20 @@ void runCaptureWorker(CaptureTarget target, uint16_t listenPort)
         return;
     }
 
-    SOCKET receiveSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (receiveSocket == INVALID_SOCKET)
-    {
-        const int err = WSAGetLastError();
-        WSACleanup();
-        result->success = false;
-        result->info = L"Capture failed: cannot create UDP socket (WSA " + std::to_wstring(err) + L").";
-        postCaptureDone(result);
-        return;
-    }
-
-    DWORD timeoutMs = 250;
-    setsockopt(
-        receiveSocket,
-        SOL_SOCKET,
-        SO_RCVTIMEO,
-        reinterpret_cast<const char*>(&timeoutMs),
-        sizeof(timeoutMs));
-
-    sockaddr_in bindAddress{};
-    bindAddress.sin_family = AF_INET;
-    bindAddress.sin_port = htons(listenPort);
-    bindAddress.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(receiveSocket, reinterpret_cast<const sockaddr*>(&bindAddress), sizeof(bindAddress)) == SOCKET_ERROR)
-    {
-        const int err = WSAGetLastError();
-        closesocket(receiveSocket);
-        WSACleanup();
-        result->success = false;
-        result->info =
-            L"Capture failed: cannot bind UDP " + std::to_wstring(listenPort)
-            + L" (WSA " + std::to_wstring(err) + L"). Stop relay/game host using this port.";
-        postCaptureDone(result);
-        return;
-    }
-
-    std::vector<uint8_t> buffer(2048);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kDefaultCaptureTimeoutMs);
-    while (!g_app.capture.stopRequested.load() && std::chrono::steady_clock::now() < deadline)
+    auto finalizeResult = [&]()
     {
-        sockaddr_in from{};
-        int fromLen = sizeof(from);
-        const int received = recvfrom(
-            receiveSocket,
-            reinterpret_cast<char*>(buffer.data()),
-            static_cast<int>(buffer.size()),
-            0,
-            reinterpret_cast<sockaddr*>(&from),
-            &fromLen);
-        if (received <= 0)
+        WSACleanup();
+        if (g_app.capture.stopRequested.load())
         {
-            continue;
+            delete result;
+            return;
         }
+        postCaptureDone(result);
+    };
 
-        std::vector<uint8_t> payload(buffer.begin(), buffer.begin() + received);
-        if (!looksLikeLanDiscoveryPayload(payload))
-        {
-            continue;
-        }
-
-        result->success = true;
-        result->sample.payload = std::move(payload);
-        result->sample.sourceIp = from.sin_addr.s_addr;
-        result->sample.sourcePort = ntohs(from.sin_port);
-        result->sample.capturedAt = nowTimestamp();
+    auto fillSuccessMessage = [&]()
+    {
         std::wostringstream msg;
         msg << L"Captured "
             << ((target == CaptureTarget::InGame) ? L"in-game" : L"standalone")
@@ -1273,7 +1342,202 @@ void runCaptureWorker(CaptureTarget target, uint16_t listenPort)
             << L":" << result->sample.sourcePort
             << L" bytes=" << result->sample.payload.size() << L".";
         result->info = msg.str();
-        break;
+    };
+
+    auto captureViaUdpBoundSocket = [&](SOCKET socketHandle) -> bool
+    {
+        std::vector<uint8_t> buffer(2048);
+        while (!g_app.capture.stopRequested.load() && std::chrono::steady_clock::now() < deadline)
+        {
+            sockaddr_in from{};
+            int fromLen = sizeof(from);
+            const int received = recvfrom(
+                socketHandle,
+                reinterpret_cast<char*>(buffer.data()),
+                static_cast<int>(buffer.size()),
+                0,
+                reinterpret_cast<sockaddr*>(&from),
+                &fromLen);
+            if (received <= 0)
+            {
+                continue;
+            }
+
+            std::vector<uint8_t> payload(buffer.begin(), buffer.begin() + received);
+            if (!looksLikeLanDiscoveryPayload(payload))
+            {
+                continue;
+            }
+
+            result->success = true;
+            result->sample.payload = std::move(payload);
+            result->sample.sourceIp = from.sin_addr.s_addr;
+            result->sample.sourcePort = ntohs(from.sin_port);
+            result->sample.capturedAt = nowTimestamp();
+            fillSuccessMessage();
+            return true;
+        }
+        return false;
+    };
+
+    auto captureViaRawSocketFallback = [&]() -> bool
+    {
+        SOCKET rawSocket = socket(AF_INET, SOCK_RAW, IPPROTO_IP);
+        if (rawSocket == INVALID_SOCKET)
+        {
+            const int err = WSAGetLastError();
+            result->info =
+                L"Capture failed: UDP port is busy and raw fallback socket creation failed (WSA "
+                + std::to_wstring(err)
+                + L"). Run as Administrator or stop app using UDP "
+                + std::to_wstring(listenPort) + L".";
+            return false;
+        }
+
+        DWORD timeoutMs = 250;
+        setsockopt(rawSocket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+
+        uint32_t localAddress = 0;
+        if (!pickPrimaryIpv4Address(&localAddress))
+        {
+            closesocket(rawSocket);
+            result->info = L"Capture failed: could not resolve local IPv4 address for raw fallback.";
+            return false;
+        }
+
+        sockaddr_in bindAddress{};
+        bindAddress.sin_family = AF_INET;
+        bindAddress.sin_port = 0;
+        bindAddress.sin_addr.s_addr = localAddress;
+        if (bind(rawSocket, reinterpret_cast<const sockaddr*>(&bindAddress), sizeof(bindAddress)) == SOCKET_ERROR)
+        {
+            const int err = WSAGetLastError();
+            closesocket(rawSocket);
+            result->info =
+                L"Capture failed: raw fallback bind failed on "
+                + formatIpv4Address(localAddress) + L" (WSA " + std::to_wstring(err) + L").";
+            return false;
+        }
+
+        DWORD rcval = RCVALL_ON;
+        DWORD bytesReturned = 0;
+        if (WSAIoctl(
+                rawSocket,
+                SIO_RCVALL,
+                &rcval,
+                sizeof(rcval),
+                nullptr,
+                0,
+                &bytesReturned,
+                nullptr,
+                nullptr) == SOCKET_ERROR)
+        {
+            const int err = WSAGetLastError();
+            closesocket(rawSocket);
+            result->info =
+                L"Capture failed: raw fallback capture mode rejected (WSA " + std::to_wstring(err)
+                + L"). Try running relay as Administrator.";
+            return false;
+        }
+
+        bool captured = false;
+        std::vector<uint8_t> frameBuffer(65536);
+        while (!g_app.capture.stopRequested.load() && std::chrono::steady_clock::now() < deadline)
+        {
+            const int received = recv(rawSocket, reinterpret_cast<char*>(frameBuffer.data()), static_cast<int>(frameBuffer.size()), 0);
+            if (received <= 0)
+            {
+                continue;
+            }
+
+            BeaconSample sample;
+            if (!tryExtractLanDiscoveryFromRawIp(frameBuffer.data(), received, listenPort, &sample))
+            {
+                continue;
+            }
+
+            result->success = true;
+            result->sample = std::move(sample);
+            fillSuccessMessage();
+            result->info += L" (raw fallback mode)";
+            captured = true;
+            break;
+        }
+
+        if (!captured && !g_app.capture.stopRequested.load())
+        {
+            result->info =
+                L"Raw fallback capture timed out after "
+                + std::to_wstring(kDefaultCaptureTimeoutMs / 1000)
+                + L"s on UDP "
+                + std::to_wstring(listenPort)
+                + L".";
+        }
+
+        rcval = RCVALL_OFF;
+        WSAIoctl(
+            rawSocket,
+            SIO_RCVALL,
+            &rcval,
+            sizeof(rcval),
+            nullptr,
+            0,
+            &bytesReturned,
+            nullptr,
+            nullptr);
+        closesocket(rawSocket);
+        return captured;
+    };
+
+    SOCKET receiveSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (receiveSocket == INVALID_SOCKET)
+    {
+        const int err = WSAGetLastError();
+        result->success = false;
+        result->info = L"Capture failed: cannot create UDP socket (WSA " + std::to_wstring(err) + L").";
+        finalizeResult();
+        return;
+    }
+
+    DWORD timeoutMs = 250;
+    setsockopt(receiveSocket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+    int reuse = 1;
+    setsockopt(receiveSocket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+
+    sockaddr_in bindAddress{};
+    bindAddress.sin_family = AF_INET;
+    bindAddress.sin_port = htons(listenPort);
+    bindAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (bind(receiveSocket, reinterpret_cast<const sockaddr*>(&bindAddress), sizeof(bindAddress)) == SOCKET_ERROR)
+    {
+        const int err = WSAGetLastError();
+        closesocket(receiveSocket);
+        receiveSocket = INVALID_SOCKET;
+
+        if (err == WSAEADDRINUSE)
+        {
+            result->info =
+                L"UDP " + std::to_wstring(listenPort)
+                + L" is busy (WSA 10048), trying raw fallback capture...";
+            if (!captureViaRawSocketFallback())
+            {
+                result->success = false;
+            }
+        }
+        else
+        {
+            result->success = false;
+            result->info =
+                L"Capture failed: cannot bind UDP " + std::to_wstring(listenPort)
+                + L" (WSA " + std::to_wstring(err) + L").";
+        }
+    }
+    else
+    {
+        captureViaUdpBoundSocket(receiveSocket);
+        closesocket(receiveSocket);
+        receiveSocket = INVALID_SOCKET;
     }
 
     if (!result->success)
@@ -1282,7 +1546,7 @@ void runCaptureWorker(CaptureTarget target, uint16_t listenPort)
         {
             result->info = L"Capture cancelled.";
         }
-        else
+        else if (result->info.empty())
         {
             result->info = L"Capture timeout after "
                 + std::to_wstring(kDefaultCaptureTimeoutMs / 1000)
@@ -1290,15 +1554,7 @@ void runCaptureWorker(CaptureTarget target, uint16_t listenPort)
         }
     }
 
-    closesocket(receiveSocket);
-    WSACleanup();
-
-    if (g_app.capture.stopRequested.load())
-    {
-        delete result;
-        return;
-    }
-    postCaptureDone(result);
+    finalizeResult();
 }
 
 void startCaptureFromUi(CaptureTarget target)
