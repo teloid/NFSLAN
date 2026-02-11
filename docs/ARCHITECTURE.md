@@ -8,8 +8,13 @@ This fork includes AI-assisted implementation and documentation updates while pr
   - No Qt runtime dependency
   - Includes `server.cfg` editor in UI
   - Starts/stops worker and streams logs
+  - Launches embedded relay UI and standalone U2 self-filter patch launcher
 - Qt GUI (`gui`)
   - Optional cross-platform launcher path
+- U2 patch launcher (`native_win32/src/U2PatchLauncher.cpp`)
+  - Starts `speed2.exe`
+  - Applies runtime memory patch loop that clears UG2 LAN self-filter flags (`entry+0x19c`)
+  - Targets same-machine host+client visibility issue in NFSU2 client
 - Worker runtime (`NFSLAN.cpp`)
   - Loads `server.dll`
   - Resolves `StartServer`, `IsServerRunning`, `StopServer`
@@ -17,7 +22,8 @@ This fork includes AI-assisted implementation and documentation updates while pr
   - Applies startup `server.cfg` compatibility preflight (`ENABLE_GAME_ADDR_FIXUPS`, optional same-machine `FORCE_LOCAL`)
   - Applies profile-specific key normalization for MW vs UG2 network config keys (including `LOBBY_IDENT`/`LOBBY` defaults)
   - Validates/selects compatible game report file (`gamefile.bin`/`gameplay.bin`) by header, not only filename
-  - Optional same-machine LAN discovery loopback bridge (`UDP 9999`) in `--same-machine` mode
+  - Optional same-machine LAN discovery loopback bridge (`UDP 9999`) in `--same-machine` / `--local-emulation` modes
+  - UG2 sendto hook now mirrors discovery beacons for local visibility diagnostics without forcing beacon field rewrites
 
 ## Runtime models
 

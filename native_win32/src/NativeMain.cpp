@@ -35,7 +35,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-11-native-ui-localemu-2";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-11-native-ui-u2patcher-1";
 constexpr int kGameProfileMostWanted = 0;
 constexpr int kGameProfileUnderground2 = 1;
 
@@ -60,6 +60,7 @@ enum ControlId : int
     kIdStart,
     kIdStop,
     kIdOpenRelay,
+    kIdOpenU2Patcher,
     kIdConfigEditor,
     kIdLogView
 };
@@ -85,6 +86,7 @@ struct AppState
     HWND startButton = nullptr;
     HWND stopButton = nullptr;
     HWND openRelayButton = nullptr;
+    HWND openU2PatcherButton = nullptr;
 
     HANDLE processHandle = nullptr;
     HANDLE processThread = nullptr;
@@ -596,6 +598,10 @@ void appendUiRuntimeContext()
 
     appendLogLine(L"Worker launch mode: " + workerLaunchModeLabel());
     appendLogLine(L"Relay launch mode: " + relayLaunchModeLabel());
+    const std::filesystem::path patcherPath = exeDirectory() / "NFSLAN-U2-Patcher.exe";
+    appendLogLine(
+        std::wstring(L"U2 patch launcher: ")
+        + (std::filesystem::exists(patcherPath) ? patcherPath.wstring() : L"<not found>"));
     appendLogLine(L"Selected profile: " + gameProfileDisplayName(currentGameProfileIndex()));
     appendLogLine(L"Server directory: " + currentServerDirectory().wstring());
     appendLogLine(L"Server config: " + currentServerConfigPath().wstring());
@@ -900,6 +906,12 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
             warnings.push_back(
                 L"Same-machine mode with PORT=9900 may conflict with client bind on some patches.");
         }
+        if (profile == kGameProfileUnderground2)
+        {
+            warnings.push_back(
+                L"UG2 client has a self-discovery filter in speed2.exe. "
+                L"Use NFSLAN-U2-Patcher when host and client run on the same PC.");
+        }
     }
 
     const bool localEmulationEnabled =
@@ -937,6 +949,13 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
         {
             warnings.push_back(
                 L"LOCAL_EMULATION works best with ADDR=127.0.0.1 (same-machine loopback hosting).");
+        }
+
+        if (profile == kGameProfileUnderground2)
+        {
+            warnings.push_back(
+                L"LOCAL_EMULATION helps LAN probes, but UG2 client may still hide local servers "
+                L"without a speed2.exe self-filter patch.");
         }
     }
 
@@ -1307,6 +1326,50 @@ void launchRelayUi()
 #else
     showError(L"Relay UI is not embedded in this build.");
 #endif
+}
+
+void launchU2Patcher()
+{
+    const std::filesystem::path patcherPath = exeDirectory() / "NFSLAN-U2-Patcher.exe";
+    if (!std::filesystem::exists(patcherPath))
+    {
+        showError(
+            L"NFSLAN-U2-Patcher.exe was not found next to this launcher.\n"
+            L"Build/install the patcher target and place it in the same folder.");
+        return;
+    }
+
+    std::wstring commandLine = L"\"" + patcherPath.wstring() + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+
+    commandLine.push_back(L'\0');
+    const BOOL created = CreateProcessW(
+        patcherPath.wstring().c_str(),
+        commandLine.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        0,
+        nullptr,
+        exeDirectory().wstring().c_str(),
+        &si,
+        &pi);
+    if (!created)
+    {
+        const DWORD errorCode = GetLastError();
+        const std::wstring errorDetails =
+            L"Failed to launch U2 patcher. Win32 error " + std::to_wstring(errorCode) + L": "
+            + formatWin32Error(errorCode);
+        appendLogLine(errorDetails);
+        showError(errorDetails);
+        return;
+    }
+
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    appendLogLine(L"Opened U2 self-filter patch launcher.");
 }
 
 void stopWorker()
@@ -2058,6 +2121,21 @@ void createUi(HWND window)
         nullptr);
     applyDefaultFontToWindow(g_app.openRelayButton);
 
+    g_app.openU2PatcherButton = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"U2 patcher",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        left + 5 * (buttonWidth + 8),
+        y,
+        buttonWidth + 30,
+        rowHeight,
+        window,
+        reinterpret_cast<HMENU>(kIdOpenU2Patcher),
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.openU2PatcherButton);
+
     y += rowHeight + rowGap;
 
     createLabel(window, L"server.cfg", left, y + 4, labelWidth, rowHeight);
@@ -2237,6 +2315,10 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
 
     case kIdOpenRelay:
         launchRelayUi();
+        return 0;
+
+    case kIdOpenU2Patcher:
+        launchU2Patcher();
         return 0;
 
     default:

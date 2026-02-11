@@ -42,10 +42,11 @@ If the server host also runs the game client on the same PC:
 
 1. Enable `FORCE_LOCAL=1` in `server.cfg` (or via native GUI `Same-machine mode`, which also sets `ADDR=127.0.0.1`).
 2. Keep `ENABLE_GAME_ADDR_FIXUPS=1`.
-3. If client still cannot join, test a server `PORT` other than `9900`.
-4. Start the server with `--same-machine` when using console worker directly.
-5. In `--same-machine` mode, worker now enables a local LAN discovery loopback bridge on UDP `9999` to improve same-PC server visibility.
-6. For deeper packet troubleshooting, launch with `--diag-lan` (or set `LAN_DIAG=1`).
+3. For Underground 2, run `NFSLAN-U2-Patcher.exe` while playing/hosting on the same machine.
+4. If client still cannot join, test a server `PORT` other than `9900`.
+5. Start the server with `--same-machine` when using console worker directly.
+6. In `--same-machine` mode, worker enables a local LAN discovery loopback bridge on UDP `9999`.
+7. For deeper packet troubleshooting, launch with `--diag-lan` (or set `LAN_DIAG=1`).
 
 ## Game-specific notes
 
@@ -58,7 +59,9 @@ If the server host also runs the game client on the same PC:
 
 - UG2 patching is not implemented in current worker code (`PatchServerUG2` is still a stub).
 - LAN hosting can still start, but internet behavior may require additional external patches/tools.
-- Wrapper now normalizes UG2 network keys (`MADDR/RADDR/AADDR`, `MPORT/RPORT/APORT`) from `ADDR/PORT` when those keys are missing.
+- Worker normalizes UG2 config keys (`MADDR/RADDR/AADDR`, `MPORT/RPORT/APORT`) from `ADDR/PORT` when missing.
+- Worker now keeps outgoing UG2 discovery beacons close to stock server behavior (no forced field rewrites).
+- Same-machine visibility issue is primarily client-side (`speed2.exe` self-filter), handled by `NFSLAN-U2-Patcher`.
 
 ## Client requirements for internet play (known from current reverse engineering)
 
@@ -91,7 +94,7 @@ Use hostnames required by your chosen client patch package (they are not defined
 
 1. Verify server logs in `NFSLAN-GUI` show clean startup and expected build/runtime diagnostics (build tag + executable path + profile).
 2. If server is still invisible, enable `LAN_DIAG=1` and compare `LAN-DIAG` beacon logs (ident/stats/name) with packet capture.
-   - New diagnostics include `field-diff` and `byte-diff offsets` lines for UG2 beacons, showing exactly what wrapper normalization changed.
+   - Use relay capture diff report to confirm packet-level similarity and check heuristic diagnosis.
 3. Confirm firewall/router forwarding to the server machine for your configured UDP port(s).
 4. Confirm all players use the same game version + same client patch package.
 5. Confirm public IP/DNS in `server.cfg` (`ADDR`) is reachable from outside your LAN.

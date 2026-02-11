@@ -4,12 +4,13 @@ Cross-platform GUI launcher for NFS LAN server hosting with a Windows native wor
 
 ## AI-Enhanced Fork Notice
 
-This fork includes AI-assisted enhancements for architecture, GUI workflow, build system, and documentation.
+This fork includes AI-enhanced implementation and documentation updates for architecture, GUI workflow, build system, and diagnostics.
 Legacy worker behavior and reverse-engineered server limitations still apply.
 
 ## What is included
 
 - Native Win32 launcher (`NFSLAN-GUI`) with integrated `server.cfg` editor and embedded relay tool launcher (`Relay tool` button) in the same EXE
+- Native Win32 U2 patch launcher (`NFSLAN-U2-Patcher`) to bypass NFSU2 same-machine self-discovery filtering in `speed2.exe`
 - Native Win32 relay app (`NFSLAN-Relay`) for cross-subnet/cross-site LAN discovery forwarding (UG2/MW style UDP `9999` broadcast relay)
 - Native Win32 relay app includes beacon capture/diff workflow (in-game sample vs standalone sample) with detailed report export
 - Relay capture path includes UDP bind + raw fallback sniff mode when `9999` is already occupied (admin recommended)
@@ -25,7 +26,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 - Worker now auto-fills missing `LOBBY_IDENT`/`LOBBY` defaults (`NFSU2NA` for UG2, `NFSMWNA` for MW) and can run a same-machine LAN discovery loopback bridge on UDP `9999`
 - Worker supports `LOCAL_EMULATION`/`--local-emulation` with configurable discovery probe endpoint (`DISCOVERY_ADDR`/`DISCOVERY_PORT`)
 - Worker supports `--u2-mode` and `--diag-lan` for UG2 mode control and deep LAN packet diagnostics
-- Worker enforces the same server identity lock and includes UG2 beacon field normalization + packet diff diagnostics (`field-diff`, `byte-diff offsets`)
+- Worker enforces the same server identity lock; UG2 beacon handling now stays close to stock server behavior (mirror/diagnostics without forced beacon rewrites)
 
 ## Important platform reality
 
@@ -47,7 +48,7 @@ Native Linux loading of this `server.dll` is not available in this project becau
 2. Place game `server.dll` and `server.cfg` in a server folder.
 3. Open `NFSLAN-GUI`, choose game profile, set server name/path, and start.
 4. If needed for cross-subnet discovery, click `Relay tool` in the same app to open embedded `NFSLAN-Relay` mode (`--relay-ui`).
-5. If host and client run on the same PC, enable `FORCE_LOCAL` and `LOCAL_EMULATION`, then keep `ENABLE_GAME_ADDR_FIXUPS` enabled.
+5. If host and client run on the same PC (UG2), run `NFSLAN-U2-Patcher.exe`, then enable `FORCE_LOCAL` and (optionally) `LOCAL_EMULATION`.
 6. On Linux/macOS, install a Windows compatibility runtime and run the Windows build via Proton/Wine, or use the Qt launcher path.
 
 ## Documentation
@@ -56,6 +57,7 @@ Native Linux loading of this `server.dll` is not available in this project becau
 - Runtime usage: `docs/RUNNING.md`
 - Client and internet setup: `docs/CLIENT_SETUP.md`
 - Architecture notes: `docs/ARCHITECTURE.md`
+- U2 patch launcher guide: `docs/U2_PATCHER.md`
 - Legacy worker notes: `docs/LEGACY_CONSOLE.md`
 
 ## Current limitations

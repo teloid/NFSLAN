@@ -36,6 +36,7 @@ Do not run server directly from your game installation folder; use a separate se
    - worker launch mode
    - selected profile
    - effective server directory and `server.cfg` path
+10. For Underground 2 same-machine play, open `U2 patcher` from GUI and keep it running with the game.
 
 ## Worker mode behavior
 
@@ -72,6 +73,8 @@ If the host also runs the game client on the same Windows machine:
 - Keep `ENABLE_GAME_ADDR_FIXUPS=1`.
 - Use `--same-machine` from worker/GUI so local bind/address keys are forced to loopback.
 - If local client still cannot find/join, test a non-default `PORT` instead of `9900` to avoid client/server UDP bind conflicts in some patch sets.
+- For Underground 2 specifically, run `NFSLAN-U2-Patcher.exe` while the game is running.  
+  The client (`speed2.exe`) has a self-discovery filter that can hide standalone servers on the same PC even when beacon packets look correct.
 
 ## Preflight validation
 
@@ -134,6 +137,7 @@ The report includes:
 - changed byte ranges
 - byte-by-byte offset diff
 - full hex dump for both samples
+- heuristic diagnosis section (highlights likely client-side self-filter cases)
 
 ### Notes
 

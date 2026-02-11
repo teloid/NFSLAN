@@ -27,7 +27,9 @@
 ### Native Win32 GUI (x64, external worker mode)
 
 No Qt required.
-This build now includes embedded relay UI entry (`Relay tool` button, `--relay-ui`) in the same executable.
+This build now includes:
+- embedded relay UI entry (`Relay tool` button, `--relay-ui`) in the same executable
+- U2 same-machine patch launcher executable (`NFSLAN-U2-Patcher.exe`)
 
 ```powershell
 cmake -S . -B build-x64-native -G "Visual Studio 17 2022" -A x64 `
@@ -40,6 +42,7 @@ cmake --build build-x64-native --config Release
 Expected output:
 
 - GUI: `build-x64-native/native_win32/Release/NFSLAN-GUI.exe`
+- U2 patch launcher: `build-x64-native/native_win32/Release/NFSLAN-U2-Patcher.exe`
 
 ### Worker executable (x86)
 
@@ -72,6 +75,7 @@ cmake --build build-win32-single --config Release
 Expected output:
 
 - Single launcher: `build-win32-single/native_win32/Release/NFSLAN-GUI.exe`
+- U2 patch launcher: `build-win32-single/native_win32/Release/NFSLAN-U2-Patcher.exe`
 
 ### Native relay app (x64 or x86)
 
@@ -89,6 +93,7 @@ cmake --build build-relay --config Release
 Expected output:
 
 - Relay GUI: `build-relay/native_win32/Release/NFSLAN-Relay.exe`
+- U2 patch launcher: `build-relay/native_win32/Release/NFSLAN-U2-Patcher.exe`
 
 ## Build Qt launcher (optional)
 

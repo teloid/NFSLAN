@@ -77,3 +77,22 @@ if(NFSLAN_BUILD_RELAY_WIN32_GUI)
         OUTPUT_NAME "NFSLAN-Relay"
     )
 endif()
+
+if(WIN32)
+    add_executable(nfslan-u2-patcher
+        src/U2PatchLauncher.cpp
+    )
+
+    target_compile_definitions(nfslan-u2-patcher PRIVATE
+        UNICODE
+        _UNICODE
+    )
+
+    target_link_libraries(nfslan-u2-patcher PRIVATE
+        comdlg32
+    )
+
+    set_target_properties(nfslan-u2-patcher PROPERTIES
+        OUTPUT_NAME "NFSLAN-U2-Patcher"
+    )
+endif()

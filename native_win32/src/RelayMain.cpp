@@ -29,7 +29,7 @@ namespace
 {
 
 constexpr wchar_t kWindowClassName[] = L"NFSLANRelayWindowClass";
-constexpr wchar_t kBuildTag[] = L"2026-02-11-relay-ui-3";
+constexpr wchar_t kBuildTag[] = L"2026-02-11-relay-ui-4";
 
 constexpr UINT WM_APP_RELAY_LOG = WM_APP + 20;
 constexpr UINT WM_APP_RELAY_STATUS = WM_APP + 21;
@@ -340,6 +340,46 @@ std::wstring formatIpv4Address(uint32_t address)
         return L"<invalid>";
     }
     return buffer;
+}
+
+uint32_t ipv4HostOrder(uint32_t address)
+{
+    return ntohl(address);
+}
+
+bool isIpv4Loopback(uint32_t address)
+{
+    const uint32_t host = ipv4HostOrder(address);
+    return (host & 0xFF000000u) == 0x7F000000u;
+}
+
+bool isIpv4PrivateOrLocal(uint32_t address)
+{
+    const uint32_t host = ipv4HostOrder(address);
+    const uint8_t a = static_cast<uint8_t>((host >> 24) & 0xFFu);
+    const uint8_t b = static_cast<uint8_t>((host >> 16) & 0xFFu);
+
+    if (a == 10u)
+    {
+        return true;
+    }
+    if (a == 172u && b >= 16u && b <= 31u)
+    {
+        return true;
+    }
+    if (a == 192u && b == 168u)
+    {
+        return true;
+    }
+    if (a == 169u && b == 254u)
+    {
+        return true;
+    }
+    if (a == 127u)
+    {
+        return true;
+    }
+    return false;
 }
 
 RelayMode currentRelayMode()
@@ -731,6 +771,35 @@ std::wstring buildBeaconDiffReport(const BeaconSample& inGame, const BeaconSampl
         report << L"Payload sizes differ: in-game=" << inGame.payload.size()
                << L", standalone=" << standalone.payload.size() << L"\n";
     }
+
+    const bool onlyStatsBitFlip =
+        (diffOffsets.size() == 1 && diffOffsets.front() == 0x4D);
+    const bool payloadMostlySame = diffOffsets.size() <= 4;
+    const bool standaloneSourceLooksLocal =
+        isIpv4Loopback(standalone.sourceIp) || isIpv4PrivateOrLocal(standalone.sourceIp);
+    const bool inGameSourceLooksLocal =
+        isIpv4Loopback(inGame.sourceIp) || isIpv4PrivateOrLocal(inGame.sourceIp);
+    const bool sourceEndpointsDiffer =
+        (inGame.sourceIp != standalone.sourceIp) || (inGame.sourcePort != standalone.sourcePort);
+
+    report << L"\n[Heuristic diagnosis]\n";
+    if (payloadMostlySame && sourceEndpointsDiffer)
+    {
+        report << L"- Beacon payload is almost identical; issue is likely client-side filtering, not packet format.\n";
+    }
+    if (onlyStatsBitFlip)
+    {
+        report << L"- Only stats byte changed (typically '|0' vs '|1'); this is usually NOT enough to explain invisibility.\n";
+    }
+    if (standaloneSourceLooksLocal)
+    {
+        report << L"- Standalone source endpoint is local/private; UG2 client self-filter is a high-probability cause.\n";
+    }
+    if (inGameSourceLooksLocal && standaloneSourceLooksLocal)
+    {
+        report << L"- Both captures came from local/private space; if standalone still hidden, patch speed2.exe self-filter path.\n";
+    }
+    report << L"- Recommended next step: run NFSLAN-U2-Patcher while hosting+playing on the same PC.\n";
 
     if (!diffOffsets.empty())
     {
@@ -2174,6 +2243,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
         appendLogLine(L"NFSLAN Relay UI initialized.");
         appendLogLine(L"Build tag: " + std::wstring(kBuildTag));
+        appendLogLine(
+            L"Hint: if U2 standalone server is still hidden on same PC with near-identical beacon payloads, "
+            L"use NFSLAN-U2-Patcher.");
         setUiRunningState(false);
         updateCaptureStatusLabel();
         refreshModeDependentUi();
