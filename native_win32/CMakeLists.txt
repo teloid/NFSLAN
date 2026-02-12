@@ -22,6 +22,7 @@ if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
         comdlg32
         shell32
         ws2_32
+        iphlpapi
     )
 
     if(NFSLAN_NATIVE_WIN32_CAN_EMBED)
@@ -41,9 +42,6 @@ if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
             NFSLAN_NATIVE_EMBED_WORKER
         )
 
-        target_link_libraries(nfslan-native-gui PRIVATE
-            iphlpapi
-        )
     else()
         message(STATUS "native_win32 GUI: external worker mode (no embedded worker)")
     endif()

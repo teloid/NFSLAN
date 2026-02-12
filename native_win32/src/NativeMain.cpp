@@ -6,6 +6,7 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
@@ -35,7 +36,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-u2bundle-1";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-bind-match-1";
 constexpr int kGameProfileMostWanted = 0;
 constexpr int kGameProfileUnderground2 = 1;
 
@@ -115,6 +116,141 @@ bool launchU2PatcherForGame(
     const std::wstring& injectName,
     int injectPort,
     const std::wstring& injectIp);
+
+std::wstring formatIpv4FromNetworkOrder(DWORD addressNetworkOrder)
+{
+    IN_ADDR address{};
+    address.S_un.S_addr = addressNetworkOrder;
+    wchar_t buffer[INET_ADDRSTRLEN] = {};
+    const PCWSTR converted = InetNtopW(AF_INET, &address, buffer, INET_ADDRSTRLEN);
+    if (!converted)
+    {
+        return L"";
+    }
+    return std::wstring(converted);
+}
+
+bool tryGetWorkerListeningIpForPort(DWORD workerPid, uint16_t port, std::wstring* ipOut)
+{
+    if (!ipOut || workerPid == 0 || port == 0)
+    {
+        return false;
+    }
+
+    DWORD tableSize = 0;
+    DWORD result = GetExtendedTcpTable(
+        nullptr,
+        &tableSize,
+        FALSE,
+        AF_INET,
+        TCP_TABLE_OWNER_PID_LISTENER,
+        0);
+    if (result != ERROR_INSUFFICIENT_BUFFER || tableSize == 0)
+    {
+        return false;
+    }
+
+    std::vector<BYTE> tableBuffer(tableSize);
+    auto* table = reinterpret_cast<PMIB_TCPTABLE_OWNER_PID>(tableBuffer.data());
+    result = GetExtendedTcpTable(
+        table,
+        &tableSize,
+        FALSE,
+        AF_INET,
+        TCP_TABLE_OWNER_PID_LISTENER,
+        0);
+    if (result != NO_ERROR)
+    {
+        return false;
+    }
+
+    bool hasWildcard = false;
+    std::wstring specificAddress;
+
+    for (DWORD i = 0; i < table->dwNumEntries; ++i)
+    {
+        const MIB_TCPROW_OWNER_PID& row = table->table[i];
+        if (row.dwOwningPid != workerPid)
+        {
+            continue;
+        }
+
+        const uint16_t rowPort = ntohs(static_cast<u_short>(row.dwLocalPort & 0xFFFF));
+        if (rowPort != port)
+        {
+            continue;
+        }
+
+        const std::wstring localIp = formatIpv4FromNetworkOrder(row.dwLocalAddr);
+        if (localIp.empty())
+        {
+            continue;
+        }
+
+        if (localIp == L"127.0.0.1")
+        {
+            *ipOut = localIp;
+            return true;
+        }
+
+        if (localIp == L"0.0.0.0")
+        {
+            hasWildcard = true;
+            continue;
+        }
+
+        specificAddress = localIp;
+    }
+
+    if (!specificAddress.empty())
+    {
+        *ipOut = specificAddress;
+        return true;
+    }
+
+    if (hasWildcard)
+    {
+        *ipOut = L"127.0.0.1";
+        return true;
+    }
+
+    return false;
+}
+
+bool tryResolveRunningWorkerInjectIpForPort(int port, std::wstring* ipOut)
+{
+    if (!ipOut || !g_app.running || !g_app.processHandle || port < 1 || port > 65535)
+    {
+        return false;
+    }
+
+    const DWORD workerPid = GetProcessId(g_app.processHandle);
+    if (workerPid == 0)
+    {
+        return false;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        std::wstring detectedIp;
+        if (tryGetWorkerListeningIpForPort(workerPid, static_cast<uint16_t>(port), &detectedIp))
+        {
+            *ipOut = detectedIp;
+            return true;
+        }
+
+        const DWORD workerState = WaitForSingleObject(g_app.processHandle, 0);
+        if (workerState == WAIT_OBJECT_0 || workerState == WAIT_FAILED)
+        {
+            break;
+        }
+
+        Sleep(120);
+    }
+
+    return false;
+}
 
 std::wstring trim(const std::wstring& input)
 {
@@ -1420,6 +1556,32 @@ void launchU2Patcher()
                 injectIp = L"127.0.0.1";
             }
 
+            std::wstring detectedIp;
+            if (tryResolveRunningWorkerInjectIpForPort(injectPort, &detectedIp))
+            {
+                if (injectIp != detectedIp)
+                {
+                    appendLogLine(
+                        L"U2 patcher: overriding inject IP from "
+                        + injectIp
+                        + L" to worker listener "
+                        + detectedIp
+                        + L" on port "
+                        + std::to_wstring(injectPort)
+                        + L".");
+                }
+                injectIp = detectedIp;
+            }
+            else if (g_app.running)
+            {
+                appendLogLine(
+                    L"U2 patcher: could not resolve worker listener address on port "
+                    + std::to_wstring(injectPort)
+                    + L"; using configured IP "
+                    + injectIp
+                    + L".");
+            }
+
             const std::wstring injectName = L"NAME";
             launchU2PatcherForGame(gamePath, injectName, injectPort, injectIp);
             return;
@@ -1856,6 +2018,32 @@ void startU2SamePcBundle()
     if (injectIp.empty())
     {
         injectIp = L"127.0.0.1";
+    }
+
+    std::wstring detectedIp;
+    if (tryResolveRunningWorkerInjectIpForPort(injectPort, &detectedIp))
+    {
+        if (injectIp != detectedIp)
+        {
+            appendLogLine(
+                L"UG2 Same-PC bundle: overriding inject IP from "
+                + injectIp
+                + L" to worker listener "
+                + detectedIp
+                + L" on port "
+                + std::to_wstring(injectPort)
+                + L".");
+        }
+        injectIp = detectedIp;
+    }
+    else
+    {
+        appendLogLine(
+            L"UG2 Same-PC bundle warning: could not resolve worker listener address on port "
+            + std::to_wstring(injectPort)
+            + L"; using configured IP "
+            + injectIp
+            + L".");
     }
 
     const std::wstring injectName = L"NAME";
