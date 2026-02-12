@@ -39,7 +39,6 @@ Use this if you want server-only runtime without launching the game patcher.
 In your selected server directory:
 
 - `server.dll` (Underground 2 server DLL)
-- `server.cfg`
 
 ## Build (Windows 11)
 

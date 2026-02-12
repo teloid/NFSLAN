@@ -368,8 +368,8 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 compile_commands.json
-SERVER/server.dll.c
-SERVER/server.dll.h
+SERVER/
+SPEEDEXE/
 
 # Project-local runtime artifacts
 .DS_Store

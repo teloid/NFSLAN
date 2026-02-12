@@ -27,10 +27,16 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
 
 #if defined(NFSLAN_NATIVE_EMBED_WORKER)
 int NFSLANWorkerMain(int argc, char* argv[]);
@@ -92,6 +98,16 @@ struct AppState
     HFONT uiFont = nullptr;
     HFONT titleFont = nullptr;
     HFONT monoFont = nullptr;
+    HBRUSH windowBrush = nullptr;
+    HBRUSH inputBrush = nullptr;
+    HBRUSH buttonBrush = nullptr;
+    COLORREF colorWindowBg = RGB(20, 22, 28);
+    COLORREF colorInputBg = RGB(34, 37, 46);
+    COLORREF colorButtonBg = RGB(46, 50, 62);
+    COLORREF colorText = RGB(232, 235, 245);
+    COLORREF colorAccent = RGB(117, 164, 255);
+    ULONGLONG lastConnectionPollTick = 0;
+    std::set<std::wstring> activeConnectionEndpoints;
     std::wstring exePath;
     std::wstring pendingLogLine;
     std::wstring lastEventLine;
@@ -105,6 +121,10 @@ bool launchU2PatcherForGame(
     int injectPort,
     const std::wstring& injectIp);
 std::wstring formatIpv4FromNetworkOrder(DWORD addressNetworkOrder);
+std::wstring getWindowTextString(HWND window);
+std::wstring trim(const std::wstring& input);
+bool tryParseIntRange(const std::wstring& text, int minValue, int maxValue, int* valueOut);
+void appendEventLine(const std::wstring& line);
 
 bool tryGetPrimaryLanIpv4(std::wstring* ipOut)
 {
@@ -300,6 +320,124 @@ bool tryResolveRunningWorkerInjectIpForPort(int port, std::wstring* ipOut)
     }
 
     return false;
+}
+
+std::wstring formatEndpointString(DWORD addrNetworkOrder, DWORD portNetworkOrder)
+{
+    const std::wstring ip = formatIpv4FromNetworkOrder(addrNetworkOrder);
+    if (ip.empty())
+    {
+        return L"";
+    }
+
+    const uint16_t port = ntohs(static_cast<u_short>(portNetworkOrder & 0xFFFF));
+    return ip + L":" + std::to_wstring(port);
+}
+
+void pollWorkerClientConnections()
+{
+    if (!g_app.running || !g_app.processHandle)
+    {
+        if (!g_app.activeConnectionEndpoints.empty())
+        {
+            g_app.activeConnectionEndpoints.clear();
+        }
+        return;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    if (now - g_app.lastConnectionPollTick < 1000)
+    {
+        return;
+    }
+    g_app.lastConnectionPollTick = now;
+
+    int port = 0;
+    if (!tryParseIntRange(trim(getWindowTextString(g_app.portEdit)), 1, 65535, &port))
+    {
+        return;
+    }
+
+    const DWORD workerPid = GetProcessId(g_app.processHandle);
+    if (workerPid == 0)
+    {
+        return;
+    }
+
+    DWORD tableSize = 0;
+    DWORD result = GetExtendedTcpTable(
+        nullptr,
+        &tableSize,
+        FALSE,
+        AF_INET,
+        TCP_TABLE_OWNER_PID_CONNECTIONS,
+        0);
+    if (result != ERROR_INSUFFICIENT_BUFFER || tableSize == 0)
+    {
+        return;
+    }
+
+    std::vector<BYTE> tableBuffer(tableSize);
+    auto* table = reinterpret_cast<PMIB_TCPTABLE_OWNER_PID>(tableBuffer.data());
+    result = GetExtendedTcpTable(
+        table,
+        &tableSize,
+        FALSE,
+        AF_INET,
+        TCP_TABLE_OWNER_PID_CONNECTIONS,
+        0);
+    if (result != NO_ERROR)
+    {
+        return;
+    }
+
+    const uint16_t targetPort = static_cast<uint16_t>(port);
+    std::set<std::wstring> newEndpoints;
+
+    for (DWORD i = 0; i < table->dwNumEntries; ++i)
+    {
+        const MIB_TCPROW_OWNER_PID& row = table->table[i];
+        if (row.dwOwningPid != workerPid || row.dwState != MIB_TCP_STATE_ESTAB)
+        {
+            continue;
+        }
+
+        const uint16_t localPort = ntohs(static_cast<u_short>(row.dwLocalPort & 0xFFFF));
+        if (localPort != targetPort)
+        {
+            continue;
+        }
+
+        const std::wstring endpoint = formatEndpointString(row.dwRemoteAddr, row.dwRemotePort);
+        if (!endpoint.empty())
+        {
+            newEndpoints.insert(endpoint);
+        }
+    }
+
+    for (const auto& endpoint : newEndpoints)
+    {
+        if (g_app.activeConnectionEndpoints.find(endpoint) == g_app.activeConnectionEndpoints.end())
+        {
+            appendEventLine(L"CONNECTION: client session established: " + endpoint);
+        }
+    }
+
+    for (const auto& endpoint : g_app.activeConnectionEndpoints)
+    {
+        if (newEndpoints.find(endpoint) == newEndpoints.end())
+        {
+            appendEventLine(L"CONNECTION: client session closed: " + endpoint);
+        }
+    }
+
+    if (newEndpoints.size() != g_app.activeConnectionEndpoints.size())
+    {
+        appendEventLine(L"CONNECTION: active sessions on port " + std::to_wstring(targetPort)
+                        + L": " + std::to_wstring(newEndpoints.size()));
+    }
+
+    g_app.activeConnectionEndpoints = std::move(newEndpoints);
 }
 
 std::wstring trim(const std::wstring& input)
@@ -1233,6 +1371,11 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
 void setUiRunningState(bool running)
 {
     g_app.running = running;
+    if (!running)
+    {
+        g_app.lastConnectionPollTick = 0;
+        g_app.activeConnectionEndpoints.clear();
+    }
 
     if (g_app.statusValueLabel)
     {
@@ -1948,6 +2091,37 @@ void ensureUiFonts()
     }
 }
 
+void ensureThemeResources()
+{
+    if (!g_app.windowBrush)
+    {
+        g_app.windowBrush = CreateSolidBrush(g_app.colorWindowBg);
+    }
+    if (!g_app.inputBrush)
+    {
+        g_app.inputBrush = CreateSolidBrush(g_app.colorInputBg);
+    }
+    if (!g_app.buttonBrush)
+    {
+        g_app.buttonBrush = CreateSolidBrush(g_app.colorButtonBg);
+    }
+}
+
+void applyWindowDarkMode(HWND window)
+{
+    if (!window)
+    {
+        return;
+    }
+
+    BOOL enabled = TRUE;
+    DwmSetWindowAttribute(
+        window,
+        DWMWA_USE_IMMERSIVE_DARK_MODE,
+        &enabled,
+        sizeof(enabled));
+}
+
 void applyDefaultFontToWindow(HWND window)
 {
     if (!window)
@@ -1956,9 +2130,10 @@ void applyDefaultFontToWindow(HWND window)
     }
 
     ensureUiFonts();
+    ensureThemeResources();
     const HFONT font = g_app.uiFont ? g_app.uiFont : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     SendMessageW(window, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    SetWindowTheme(window, L"Explorer", nullptr);
+    SetWindowTheme(window, L"DarkMode_Explorer", nullptr);
 }
 
 void applyTitleFontToWindow(HWND window)
@@ -1981,9 +2156,10 @@ void applyMonospaceFontToWindow(HWND window)
     }
 
     ensureUiFonts();
+    ensureThemeResources();
     const HFONT font = g_app.monoFont ? g_app.monoFont : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     SendMessageW(window, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    SetWindowTheme(window, L"Explorer", nullptr);
+    SetWindowTheme(window, L"DarkMode_Explorer", nullptr);
 }
 
 void createLabel(HWND parent, const wchar_t* text, int x, int y, int width, int height)
@@ -2007,6 +2183,8 @@ void createLabel(HWND parent, const wchar_t* text, int x, int y, int width, int 
 void createUi(HWND window)
 {
     g_app.window = window;
+    ensureThemeResources();
+    applyWindowDarkMode(window);
 
     constexpr int left = 14;
     constexpr int labelWidth = 132;
@@ -2447,6 +2625,50 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_COMMAND:
         return handleCommand(window, wParam);
 
+    case WM_ERASEBKGND:
+    {
+        ensureThemeResources();
+        RECT rect{};
+        GetClientRect(window, &rect);
+        FillRect(reinterpret_cast<HDC>(wParam), &rect, g_app.windowBrush);
+        return 1;
+    }
+
+    case WM_CTLCOLORSTATIC:
+    {
+        ensureThemeResources();
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        HWND control = reinterpret_cast<HWND>(lParam);
+        SetBkMode(hdc, TRANSPARENT);
+        if (control == g_app.statusValueLabel)
+        {
+            SetTextColor(hdc, g_app.running ? RGB(138, 230, 158) : RGB(255, 183, 117));
+        }
+        else
+        {
+            SetTextColor(hdc, g_app.colorText);
+        }
+        return reinterpret_cast<LRESULT>(g_app.windowBrush);
+    }
+
+    case WM_CTLCOLOREDIT:
+    {
+        ensureThemeResources();
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(hdc, g_app.colorText);
+        SetBkColor(hdc, g_app.colorInputBg);
+        return reinterpret_cast<LRESULT>(g_app.inputBrush);
+    }
+
+    case WM_CTLCOLORBTN:
+    {
+        ensureThemeResources();
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(hdc, g_app.colorText);
+        SetBkColor(hdc, g_app.colorButtonBg);
+        return reinterpret_cast<LRESULT>(g_app.buttonBrush);
+    }
+
     case WM_TIMER:
         if (wParam == kWorkerPollTimerId && g_app.running && g_app.processHandle)
         {
@@ -2456,6 +2678,10 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 GetExitCodeProcess(g_app.processHandle, &exitCode);
                 appendLogLine(L"Worker exited with code " + std::to_wstring(exitCode));
                 cleanupWorkerResources();
+            }
+            else
+            {
+                pollWorkerClientConnections();
             }
         }
         return 0;
@@ -2497,6 +2723,21 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         {
             DeleteObject(g_app.monoFont);
             g_app.monoFont = nullptr;
+        }
+        if (g_app.windowBrush)
+        {
+            DeleteObject(g_app.windowBrush);
+            g_app.windowBrush = nullptr;
+        }
+        if (g_app.inputBrush)
+        {
+            DeleteObject(g_app.inputBrush);
+            g_app.inputBrush = nullptr;
+        }
+        if (g_app.buttonBrush)
+        {
+            DeleteObject(g_app.buttonBrush);
+            g_app.buttonBrush = nullptr;
         }
         PostQuitMessage(0);
         return 0;
@@ -2581,7 +2822,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
     wc.lpfnWndProc = windowProc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    wc.hbrBackground = nullptr;
     wc.lpszClassName = kWindowClassName;
 
     RegisterClassExW(&wc);
