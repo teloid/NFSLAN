@@ -56,15 +56,12 @@ enum ControlId : int
     kIdProfile,
     kIdServerDir,
     kIdBrowseServerDir,
-    kIdU2GameExe,
-    kIdBrowseU2GameExe,
     kIdPort,
     kIdAddr,
-    kIdU2StartMode,
     kIdLoadConfig,
     kIdSaveConfig,
     kIdStart,
-    kIdStartU2SamePc,
+    kIdStartBundle,
     kIdStop,
     kIdConfigEditor,
     kIdEventsView,
@@ -77,19 +74,16 @@ struct AppState
     HWND serverNameEdit = nullptr;
     HWND profileCombo = nullptr;
     HWND serverDirEdit = nullptr;
-    HWND u2GameExeEdit = nullptr;
     HWND portEdit = nullptr;
     HWND addrEdit = nullptr;
-    HWND u2StartModeEdit = nullptr;
     HWND statusValueLabel = nullptr;
     HWND configEditor = nullptr;
     HWND eventsView = nullptr;
     HWND logView = nullptr;
     HWND runtimeSummaryLabel = nullptr;
     HWND startButton = nullptr;
-    HWND startU2SamePcButton = nullptr;
+    HWND startBundleButton = nullptr;
     HWND stopButton = nullptr;
-    HWND browseU2GameExeButton = nullptr;
 
     HANDLE processHandle = nullptr;
     HANDLE processThread = nullptr;
@@ -1237,30 +1231,14 @@ void refreshProfileSpecificControls()
 {
     const BOOL editableWhenIdle = (!g_app.running) ? TRUE : FALSE;
     const BOOL launchWhenIdle = (!g_app.running) ? TRUE : FALSE;
-    const bool isU2 = (selectedProfile() == GameProfile::Underground2);
 
     if (g_app.profileCombo)
     {
         EnableWindow(g_app.profileCombo, editableWhenIdle);
     }
-    if (g_app.u2StartModeEdit)
+    if (g_app.startBundleButton)
     {
-        ShowWindow(g_app.u2StartModeEdit, isU2 ? SW_SHOW : SW_HIDE);
-        EnableWindow(g_app.u2StartModeEdit, editableWhenIdle && isU2 ? TRUE : FALSE);
-    }
-    if (g_app.u2GameExeEdit)
-    {
-        ShowWindow(g_app.u2GameExeEdit, SW_HIDE);
-        EnableWindow(g_app.u2GameExeEdit, FALSE);
-    }
-    if (g_app.browseU2GameExeButton)
-    {
-        ShowWindow(g_app.browseU2GameExeButton, SW_HIDE);
-        EnableWindow(g_app.browseU2GameExeButton, FALSE);
-    }
-    if (g_app.startU2SamePcButton)
-    {
-        EnableWindow(g_app.startU2SamePcButton, launchWhenIdle);
+        EnableWindow(g_app.startBundleButton, launchWhenIdle);
     }
 }
 
@@ -1514,17 +1492,6 @@ void syncFieldsFromConfigEditor()
     {
         setWindowTextString(g_app.addrEdit, addrValue);
     }
-
-    const std::wstring u2StartModeValue = trim(getConfigValue(configText, L"U2_START_MODE"));
-    if (g_app.u2StartModeEdit && !u2StartModeValue.empty())
-    {
-        setWindowTextString(g_app.u2StartModeEdit, u2StartModeValue);
-    }
-    else if (g_app.u2StartModeEdit)
-    {
-        setWindowTextString(g_app.u2StartModeEdit, L"0");
-    }
-
 }
 
 void applyFieldsToConfigEditor()
@@ -1534,9 +1501,6 @@ void applyFieldsToConfigEditor()
 
     const std::wstring portValue = trim(getWindowTextString(g_app.portEdit));
     const std::wstring addrValue = trim(getWindowTextString(g_app.addrEdit));
-    const std::wstring u2StartModeValue = g_app.u2StartModeEdit
-        ? trim(getWindowTextString(g_app.u2StartModeEdit))
-        : L"0";
     const std::wstring expectedLobby = expectedLobbyIdentForProfile(profile);
 
     if (!portValue.empty())
@@ -1549,9 +1513,13 @@ void applyFieldsToConfigEditor()
         configText = upsertConfigValue(configText, L"ADDR", addrValue);
     }
 
+    const std::wstring u2StartModeValue = trim(getConfigValue(configText, L"U2_START_MODE"));
     if (profile == GameProfile::Underground2)
     {
-        configText = upsertConfigValue(configText, L"U2_START_MODE", u2StartModeValue.empty() ? L"0" : u2StartModeValue);
+        if (u2StartModeValue.empty())
+        {
+            configText = upsertConfigValue(configText, L"U2_START_MODE", L"0");
+        }
     }
     else
     {
@@ -1645,29 +1613,6 @@ std::wstring browseForDirectory(HWND owner)
 
     CoTaskMemFree(item);
     return result;
-}
-
-std::wstring browseForU2GameExecutable(HWND owner)
-{
-    wchar_t filePath[MAX_PATH] = {};
-
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner;
-    const wchar_t filter[] =
-        L"NFSU2 executable (speed2.exe)\0speed2.exe\0Executable files (*.exe)\0*.exe\0All files\0*.*\0";
-    ofn.lpstrFilter = filter;
-    ofn.lpstrFile = filePath;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    ofn.lpstrTitle = L"Select NFSU2 speed2.exe";
-
-    if (!GetOpenFileNameW(&ofn))
-    {
-        return L"";
-    }
-
-    return std::wstring(filePath);
 }
 
 void stopWorker()
@@ -1987,7 +1932,7 @@ void startWorker()
     appendLogLine(L"Server started");
 }
 
-void startU2SamePcBundle()
+void startBundle()
 {
     const GameProfile profile = selectedProfile();
 
@@ -2118,8 +2063,6 @@ void saveSettings()
     WritePrivateProfileStringW(L"launcher", L"gameFolder", trim(getWindowTextString(g_app.serverDirEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"port", trim(getWindowTextString(g_app.portEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"addr", trim(getWindowTextString(g_app.addrEdit)).c_str(), path.c_str());
-    const std::wstring u2StartMode = g_app.u2StartModeEdit ? trim(getWindowTextString(g_app.u2StartModeEdit)) : L"0";
-    WritePrivateProfileStringW(L"launcher", L"u2StartMode", u2StartMode.c_str(), path.c_str());
 }
 
 std::wstring readIniValue(const std::wstring& key, const std::wstring& fallback)
@@ -2141,10 +2084,6 @@ void loadSettings()
             readIniValue(L"serverDir", getWindowTextString(g_app.serverDirEdit))));
     setWindowTextString(g_app.portEdit, readIniValue(L"port", L"9900"));
     setWindowTextString(g_app.addrEdit, readIniValue(L"addr", L"0.0.0.0"));
-    if (g_app.u2StartModeEdit)
-    {
-        setWindowTextString(g_app.u2StartModeEdit, readIniValue(L"u2StartMode", L"0"));
-    }
 
     const bool changedDir = applyDefaultUiValues(false, false);
     if (changedDir)
@@ -2428,9 +2367,6 @@ void createUi(HWND window)
 
     y += rowHeight + rowGap;
 
-    g_app.u2GameExeEdit = nullptr;
-    g_app.browseU2GameExeButton = nullptr;
-
     g_app.runtimeSummaryLabel = CreateWindowExW(
         0,
         L"STATIC",
@@ -2447,8 +2383,6 @@ void createUi(HWND window)
     applyDefaultFontToWindow(g_app.runtimeSummaryLabel);
 
     y += rowHeight + rowGap;
-
-    g_app.u2StartModeEdit = nullptr;
 
     createLabel(window, L"PORT", left, y + 4, 40, rowHeight);
     g_app.portEdit = CreateWindowExW(
@@ -2516,7 +2450,7 @@ void createUi(HWND window)
 
     const int startButtonX = left + 2 * (buttonWidth + 8);
     const int stopButtonX = startButtonX + buttonWidth + 8;
-    const int samePcButtonX = stopButtonX + buttonWidth + 8;
+    const int bundleButtonX = stopButtonX + buttonWidth + 8;
     g_app.startButton = CreateWindowExW(
         0,
         L"BUTTON",
@@ -2547,20 +2481,20 @@ void createUi(HWND window)
         nullptr);
     applyDefaultFontToWindow(g_app.stopButton);
 
-    g_app.startU2SamePcButton = CreateWindowExW(
+    g_app.startBundleButton = CreateWindowExW(
         0,
         L"BUTTON",
         L"Start Bundle (Recommended)",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-        samePcButtonX,
+        bundleButtonX,
         y,
         buttonWidth + 90,
         rowHeight,
         window,
-        reinterpret_cast<HMENU>(kIdStartU2SamePc),
+        reinterpret_cast<HMENU>(kIdStartBundle),
         nullptr,
         nullptr);
-    applyDefaultFontToWindow(g_app.startU2SamePcButton);
+    applyDefaultFontToWindow(g_app.startBundleButton);
 
     y += rowHeight + rowGap;
 
@@ -2648,23 +2582,6 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
         }
         return 0;
 
-    case kIdU2StartMode:
-        if (commandCode == EN_KILLFOCUS)
-        {
-            if (g_app.u2StartModeEdit)
-            {
-                const std::wstring raw = trim(getWindowTextString(g_app.u2StartModeEdit));
-                int parsed = 0;
-                if (!raw.empty() && !tryParseIntRange(raw, 0, 13, &parsed))
-                {
-                    setWindowTextString(g_app.u2StartModeEdit, L"0");
-                    appendLogLine(L"U2_START_MODE must be 0..13. Reset to 0.");
-                }
-                applyFieldsToConfigEditor();
-            }
-        }
-        return 0;
-
     case kIdBrowseServerDir:
     {
         const std::wstring selected = browseForDirectory(window);
@@ -2675,9 +2592,6 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
         }
         return 0;
     }
-
-    case kIdBrowseU2GameExe:
-        return 0;
 
     case kIdLoadConfig:
         loadServerConfig(true);
@@ -2694,8 +2608,8 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
         startWorker();
         return 0;
 
-    case kIdStartU2SamePc:
-        startU2SamePcBundle();
+    case kIdStartBundle:
+        startBundle();
         return 0;
 
     case kIdStop:

@@ -374,11 +374,9 @@ SPEEDEXEMV/
 
 # Project-local runtime artifacts
 .DS_Store
-.DS_Store*
+._*
 NFSLAN-native.ini
 relay-beacon-diff.txt
 *.pcap
 *.pcapng
 *.cap
-.DS_Store
-.DS_Store
