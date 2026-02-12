@@ -23,7 +23,7 @@
 namespace
 {
 
-constexpr wchar_t kBuildTag[] = L"2026-02-12-u2-force-visible-2";
+constexpr wchar_t kBuildTag[] = L"2026-02-12-u2-force-visible-3";
 
 // Decompiled U2 speed2.exe globals/offsets (base image 0x00400000):
 // DAT_008b7e28 -> LAN discovery manager singleton pointer.
@@ -619,7 +619,7 @@ bool injectSyntheticLanEntry(
     }
 
     const std::string ident = "NFSU2NA";
-    const std::string name = injectedName.empty() ? "NAME" : injectedName;
+    const std::string name = injectedName.empty() ? "Test Server" : injectedName;
     const int clampedPort = (std::max)(1, (std::min)(65535, injectedPort));
     // Match stock-like dedicated-server beacon formatting.
     const std::string stats = std::to_string(clampedPort) + "|0";
@@ -682,7 +682,7 @@ void printUsage()
         << L"Usage:\n"
         << L"  NFSLAN-U2-Patcher.exe [options] [path-to-speed2.exe] [game args...]\n\n"
         << L"Options:\n"
-        << L"  --inject-name <name>   Visible LAN row name (default: NAME)\n"
+        << L"  --inject-name <name>   Visible LAN row name (default: Test Server)\n"
         << L"  --inject-port <port>   Visible LAN row port in stats field (default: 9900)\n"
         << L"  --inject-ip <ipv4>     Visible LAN row target IP (default: observed or 127.0.0.1)\n"
         << L"  --                     Treat all following args as game args\n\n"
@@ -696,7 +696,7 @@ int wmain(int argc, wchar_t* argv[])
 {
     std::wstring gameExe;
     std::vector<std::wstring> gameArgs;
-    std::wstring injectName = L"NAME";
+    std::wstring injectName = L"Test Server";
     int injectPort = 9900;
     std::optional<std::uint32_t> injectAddrOverride;
     bool forceGameArgs = false;

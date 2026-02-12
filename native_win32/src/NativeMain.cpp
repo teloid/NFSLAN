@@ -36,7 +36,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-clean-path-2";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-clean-path-3";
 constexpr int kGameProfileMostWanted = 0;
 constexpr int kGameProfileUnderground2 = 1;
 
@@ -53,8 +53,6 @@ enum ControlId : int
     kIdPort,
     kIdAddr,
     kIdU2StartMode,
-    kIdEnableAddrFixups,
-    kIdDisablePatching,
     kIdLoadConfig,
     kIdSaveConfig,
     kIdStart,
@@ -76,8 +74,6 @@ struct AppState
     HWND portEdit = nullptr;
     HWND addrEdit = nullptr;
     HWND u2StartModeEdit = nullptr;
-    HWND enableAddrFixupsCheck = nullptr;
-    HWND disablePatchingCheck = nullptr;
     HWND configEditor = nullptr;
     HWND logView = nullptr;
     HWND runtimeSummaryLabel = nullptr;
@@ -479,33 +475,6 @@ bool equalCaseInsensitive(const std::wstring& a, const std::wstring& b)
     return true;
 }
 
-bool parseBoolConfigValue(const std::wstring& value, bool defaultValue)
-{
-    const std::wstring normalized = trim(value);
-    if (normalized.empty())
-    {
-        return defaultValue;
-    }
-
-    if (equalCaseInsensitive(normalized, L"1")
-        || equalCaseInsensitive(normalized, L"true")
-        || equalCaseInsensitive(normalized, L"yes")
-        || equalCaseInsensitive(normalized, L"on"))
-    {
-        return true;
-    }
-
-    if (equalCaseInsensitive(normalized, L"0")
-        || equalCaseInsensitive(normalized, L"false")
-        || equalCaseInsensitive(normalized, L"no")
-        || equalCaseInsensitive(normalized, L"off"))
-    {
-        return false;
-    }
-
-    return defaultValue;
-}
-
 bool parseConfigLine(const std::wstring& line, std::wstring* keyOut, std::wstring* valueOut)
 {
     std::wstring working = line;
@@ -668,12 +637,8 @@ std::wstring gameProfileDisplayName(int profileIndex)
 
 std::wstring defaultServerNameForProfile(int profileIndex)
 {
-    if (profileIndex == kGameProfileUnderground2)
-    {
-        return L"UG2 Dedicated Server";
-    }
-
-    return L"MW Dedicated Server";
+    (void)profileIndex;
+    return L"Test Server";
 }
 
 std::wstring profileFolderName(int profileIndex)
@@ -737,9 +702,13 @@ bool applyProfileDefaultsForSelectedGame(bool forceServerName, bool forceServerD
     const std::wstring newDefaultServerName = defaultServerNameForProfile(selectedProfile);
 
     const std::wstring currentServerName = trim(getWindowTextString(g_app.serverNameEdit));
+    const bool legacyDedicatedName =
+        equalCaseInsensitive(currentServerName, L"UG2 Dedicated Server")
+        || equalCaseInsensitive(currentServerName, L"MW Dedicated Server");
     if (forceServerName
         || currentServerName.empty()
-        || equalCaseInsensitive(currentServerName, oldDefaultServerName))
+        || equalCaseInsensitive(currentServerName, oldDefaultServerName)
+        || legacyDedicatedName)
     {
         setWindowTextString(g_app.serverNameEdit, newDefaultServerName);
     }
@@ -1037,22 +1006,22 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
 
     if (lobbyIdent.empty())
     {
-        errors.push_back(L"LOBBY_IDENT is missing.");
+        errors.push_back(L"LOBBY_IDENT (protocol identifier, not server name) is missing.");
     }
     else if (!equalCaseInsensitive(lobbyIdent, expectedLobby))
     {
         errors.push_back(
-            L"LOBBY_IDENT must be " + expectedLobby + L" for selected profile, got '" + lobbyIdent + L"'.");
+            L"LOBBY_IDENT must be protocol value " + expectedLobby + L" for selected profile, got '" + lobbyIdent + L"'.");
     }
 
     if (lobby.empty())
     {
-        errors.push_back(L"LOBBY is missing.");
+        errors.push_back(L"LOBBY (protocol identifier, not server name) is missing.");
     }
     else if (!equalCaseInsensitive(lobby, expectedLobby))
     {
         errors.push_back(
-            L"LOBBY must be " + expectedLobby + L" for selected profile, got '" + lobby + L"'.");
+            L"LOBBY must be protocol value " + expectedLobby + L" for selected profile, got '" + lobby + L"'.");
     }
 
     int u2Mode = 0;
@@ -1087,13 +1056,6 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
                 L"MADDR/RADDR/MPORT/RPORT are UG2-oriented keys; verify MW AADDR/CADDR/APORT/CPORT are correct.");
         }
 
-        const bool fixupsEnabled =
-            parseBoolConfigValue(getConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS"), true);
-        if (!fixupsEnabled)
-        {
-            warnings.push_back(
-                L"ENABLE_GAME_ADDR_FIXUPS=0 can break mixed local/public address join behavior on MW.");
-        }
     }
 
     const std::wstring gamefile = trim(getConfigValue(configText, L"GAMEFILE"));
@@ -1202,8 +1164,6 @@ void setUiRunningState(bool running)
     EnableWindow(GetDlgItem(g_app.window, kIdBrowseServerDir), running ? FALSE : TRUE);
     EnableWindow(g_app.portEdit, running ? FALSE : TRUE);
     EnableWindow(g_app.addrEdit, running ? FALSE : TRUE);
-    EnableWindow(g_app.enableAddrFixupsCheck, running ? FALSE : TRUE);
-    EnableWindow(g_app.disablePatchingCheck, running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.window, kIdLoadConfig), running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.window, kIdSaveConfig), running ? FALSE : TRUE);
     EnableWindow(g_app.configEditor, running ? FALSE : TRUE);
@@ -1271,8 +1231,6 @@ void syncFieldsFromConfigEditor()
         setWindowTextString(g_app.u2StartModeEdit, L"0");
     }
 
-    const bool addrFixupsEnabled = parseBoolConfigValue(getConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS"), true);
-    SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, addrFixupsEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 void applyFieldsToConfigEditor()
@@ -1300,22 +1258,16 @@ void applyFieldsToConfigEditor()
         configText = upsertConfigValue(configText, L"U2_START_MODE", u2StartModeValue);
     }
 
-    if (trim(getConfigValue(configText, L"LOBBY_IDENT")).empty())
-    {
-        configText = upsertConfigValue(configText, L"LOBBY_IDENT", expectedLobby);
-    }
-
-    if (trim(getConfigValue(configText, L"LOBBY")).empty())
-    {
-        configText = upsertConfigValue(configText, L"LOBBY", expectedLobby);
-    }
+    // LOBBY/LOBBY_IDENT are protocol IDs, not visible server names.
+    configText = upsertConfigValue(configText, L"LOBBY_IDENT", expectedLobby);
+    configText = upsertConfigValue(configText, L"LOBBY", expectedLobby);
 
     // Streamlined launcher flow: force-disable legacy same-machine emulation toggles.
     configText = upsertConfigValue(configText, L"FORCE_LOCAL", L"0");
     configText = upsertConfigValue(configText, L"LOCAL_EMULATION", L"0");
 
-    const bool addrFixupsEnabled = (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    configText = upsertConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS", addrFixupsEnabled ? L"1" : L"0");
+    // Keep worker address fixups always enabled in streamlined path.
+    configText = upsertConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS", L"1");
     configText = upsertConfigValue(configText, L"LAN_DIAG", L"0");
 
     setWindowTextString(g_app.configEditor, configText);
@@ -1526,7 +1478,11 @@ void launchU2Patcher()
                     + L".");
             }
 
-            const std::wstring injectName = L"NAME";
+            std::wstring injectName = trim(getWindowTextString(g_app.serverNameEdit));
+            if (injectName.empty())
+            {
+                injectName = defaultServerNameForProfile(currentGameProfileIndex());
+            }
             launchU2PatcherForGame(gamePath, injectName, injectPort, injectIp);
             return;
         }
@@ -1790,11 +1746,6 @@ void startWorker()
     commandLine = L"\"" + executablePath + L"\" \"" + escapeForQuotedArg(serverName) + L"\"";
 #endif
 
-    if (SendMessageW(g_app.disablePatchingCheck, BM_GETCHECK, 0, 0) == BST_CHECKED)
-    {
-        commandLine += L" -n";
-    }
-
     if (currentGameProfileIndex() == kGameProfileUnderground2 && !u2ModeText.empty())
     {
         commandLine += L" --u2-mode " + u2ModeText;
@@ -1899,7 +1850,6 @@ void startU2SamePcBundle()
         showError(L"Selected U2 game executable path is invalid.");
         return;
     }
-    SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, BST_CHECKED, 0);
     applyFieldsToConfigEditor();
     appendLogLine(
         L"UG2 bundle: launching real worker first, then patcher injects a visible entry that points to worker listener.");
@@ -1957,7 +1907,11 @@ void startU2SamePcBundle()
             + L".");
     }
 
-    const std::wstring injectName = L"NAME";
+    std::wstring injectName = trim(getWindowTextString(g_app.serverNameEdit));
+    if (injectName.empty())
+    {
+        injectName = defaultServerNameForProfile(currentGameProfileIndex());
+    }
 
     if (!launchU2PatcherForGame(gameExePath, injectName, injectPort, injectIp))
     {
@@ -1979,16 +1933,6 @@ void saveSettings()
     WritePrivateProfileStringW(L"launcher", L"port", trim(getWindowTextString(g_app.portEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"addr", trim(getWindowTextString(g_app.addrEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"u2StartMode", trim(getWindowTextString(g_app.u2StartModeEdit)).c_str(), path.c_str());
-    WritePrivateProfileStringW(
-        L"launcher",
-        L"enableAddrFixups",
-        (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
-        path.c_str());
-    WritePrivateProfileStringW(
-        L"launcher",
-        L"disablePatching",
-        (SendMessageW(g_app.disablePatchingCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
-        path.c_str());
 
 #if !defined(NFSLAN_NATIVE_EMBED_WORKER)
     WritePrivateProfileStringW(L"launcher", L"workerPath", trim(getWindowTextString(g_app.workerPathEdit)).c_str(), path.c_str());
@@ -2016,14 +1960,6 @@ void loadSettings()
     setWindowTextString(g_app.portEdit, readIniValue(L"port", L"9900"));
     setWindowTextString(g_app.addrEdit, readIniValue(L"addr", L"0.0.0.0"));
     setWindowTextString(g_app.u2StartModeEdit, readIniValue(L"u2StartMode", L"0"));
-    SendMessageW(
-        g_app.enableAddrFixupsCheck,
-        BM_SETCHECK,
-        (readIniValue(L"enableAddrFixups", L"1") == L"1") ? BST_CHECKED : BST_UNCHECKED,
-        0);
-
-    const bool disablePatching = (readIniValue(L"disablePatching", L"0") == L"1");
-    SendMessageW(g_app.disablePatchingCheck, BM_SETCHECK, disablePatching ? BST_CHECKED : BST_UNCHECKED, 0);
 
 #if !defined(NFSLAN_NATIVE_EMBED_WORKER)
     setWindowTextString(g_app.workerPathEdit, readIniValue(L"workerPath", getWindowTextString(g_app.workerPathEdit)));
@@ -2110,7 +2046,7 @@ void createUi(HWND window)
     g_app.serverNameEdit = CreateWindowExW(
         WS_EX_CLIENTEDGE,
         L"EDIT",
-        L"MW Dedicated Server",
+        defaultServerNameForProfile(kGameProfileMostWanted).c_str(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
         left + labelWidth,
         y,
@@ -2316,39 +2252,6 @@ void createUi(HWND window)
 
     y += rowHeight + rowGap;
 
-    g_app.enableAddrFixupsCheck = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"ENABLE_GAME_ADDR_FIXUPS",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        left,
-        y,
-        250,
-        rowHeight,
-        window,
-        reinterpret_cast<HMENU>(kIdEnableAddrFixups),
-        nullptr,
-        nullptr);
-    applyDefaultFontToWindow(g_app.enableAddrFixupsCheck);
-    SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, BST_CHECKED, 0);
-
-    g_app.disablePatchingCheck = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"Disable binary patching (-n)",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        left + 270,
-        y,
-        260,
-        rowHeight,
-        window,
-        reinterpret_cast<HMENU>(kIdDisablePatching),
-        nullptr,
-        nullptr);
-    applyDefaultFontToWindow(g_app.disablePatchingCheck);
-
-    y += rowHeight + rowGap;
-
     HWND loadConfigButton = CreateWindowExW(
         0,
         L"BUTTON",
@@ -2498,16 +2401,6 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
         if (commandCode == CBN_SELCHANGE)
         {
             updateDefaultsForCurrentGame(true);
-        }
-        return 0;
-
-    case kIdEnableAddrFixups:
-        if (commandCode == BN_CLICKED)
-        {
-            const bool enabled = (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
-            appendLogLine(
-                std::wstring(L"ENABLE_GAME_ADDR_FIXUPS set to ") + (enabled ? L"1" : L"0") + L" in UI.");
-            applyFieldsToConfigEditor();
         }
         return 0;
 

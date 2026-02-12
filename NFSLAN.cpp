@@ -56,7 +56,6 @@ namespace
 struct WorkerLaunchOptions
 {
     std::string serverName;
-    bool disablePatching = false;
     bool sameMachineMode = false;
     bool localEmulation = false;
     bool lanDiag = false;
@@ -79,7 +78,7 @@ struct WorkerResolvedSettings
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-11-u2-beacon-emu-1";
+constexpr const char* kBuildTag = "2026-02-12-worker-clean-path-1";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -93,7 +92,7 @@ std::thread gLanBridgeThread;
 std::atomic<bool> gUg2BeaconEmuRunning{ false };
 std::thread gUg2BeaconEmuThread;
 std::atomic<int> gUg2BeaconPort{ 9900 };
-std::string gUg2BeaconServerName = "UG2 Dedicated Server";
+std::string gUg2BeaconServerName = "Test Server";
 std::string gUg2BeaconLobbyIdent = "NFSU2NA";
 
 using SendToFn = int (WSAAPI*)(SOCKET, const char*, int, int, const sockaddr*, int);
@@ -491,20 +490,6 @@ void ForceConfigValue(std::string* configText, const std::string& key, const std
     }
 }
 
-void MigrateLegacyConfigValue(
-    std::string* configText,
-    const std::string& key,
-    const std::string& legacyValue,
-    const std::string& newValue,
-    bool* changed)
-{
-    const std::string existing = TrimAscii(GetConfigValue(*configText, key).value_or(""));
-    if (existing.empty() || EqualsIgnoreCase(existing, legacyValue))
-    {
-        ForceConfigValue(configText, key, newValue, changed);
-    }
-}
-
 bool TryReadGameReportFileHeader(const std::filesystem::path& path, uint16_t* identOut, uint16_t* versionOut)
 {
     std::ifstream file(path, std::ios::binary);
@@ -740,7 +725,7 @@ std::array<char, kUg2LanBeaconLength> BuildSyntheticUg2Beacon(const std::string&
     packet[3] = 0x03;
 
     const std::string effectiveLobby = TrimAscii(lobbyIdent).empty() ? "NFSU2NA" : TrimAscii(lobbyIdent);
-    const std::string effectiveServerName = TrimAscii(serverName).empty() ? "NAME" : TrimAscii(serverName);
+    const std::string effectiveServerName = TrimAscii(serverName).empty() ? "Test Server" : TrimAscii(serverName);
     const int effectivePort = (std::max)(1, (std::min)(65535, port));
     // Keep stock-like stats for maximum compatibility with UG2 client parsing.
     const std::string stats = std::to_string(effectivePort) + "|0";
@@ -1475,7 +1460,7 @@ void StartUg2BeaconEmulator(bool enabled, const std::string& lobbyIdent, const s
     }
 
     gUg2BeaconLobbyIdent = TrimAscii(lobbyIdent).empty() ? "NFSU2NA" : TrimAscii(lobbyIdent);
-    gUg2BeaconServerName = TrimAscii(serverName).empty() ? "NAME" : TrimAscii(serverName);
+    gUg2BeaconServerName = TrimAscii(serverName).empty() ? "Test Server" : TrimAscii(serverName);
     gUg2BeaconPort.store((std::max)(1, (std::min)(65535, port)));
 
     gUg2BeaconEmuRunning.store(true);
@@ -1712,7 +1697,6 @@ void PrintUsage()
 {
     std::cout
         << "USAGE: NFSLAN servername [options]\n"
-        << "  -n              Disable binary patching\n"
         << "  --same-machine  Force same-PC host mode (sets FORCE_LOCAL and addr fixups)\n"
         << "  --local-host    Alias for --same-machine\n"
         << "  --local-emulation  Enable discovery emulation bridge in worker\n"
@@ -1738,7 +1722,7 @@ bool ParseWorkerLaunchOptions(int argc, char* argv[], WorkerLaunchOptions* optio
         const std::string arg = argv[i];
         if (arg == "-n")
         {
-            options.disablePatching = true;
+            std::cout << "NFSLAN: NOTE - -n is deprecated and ignored; binary patching is always enabled.\n";
         }
         else if (arg == "--same-machine" || arg == "--local-host")
         {
@@ -1842,17 +1826,13 @@ bool ApplyServerConfigCompatibility(
     const std::string lobbyIdentDefault = underground2Server ? "NFSU2NA" : "NFSMWNA";
     if (underground2Server)
     {
-        MigrateLegacyConfigValue(&configText, "LOBBY_IDENT", "NFSU", lobbyIdentDefault, &changed);
-        MigrateLegacyConfigValue(&configText, "LOBBY", "NFSU", lobbyIdentDefault, &changed);
-        EnsureConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
-        EnsureConfigValue(&configText, "LOBBY", lobbyIdentDefault, &changed);
+        ForceConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
+        ForceConfigValue(&configText, "LOBBY", lobbyIdentDefault, &changed);
     }
     else
     {
-        MigrateLegacyConfigValue(&configText, "LOBBY_IDENT", "NFSMW", lobbyIdentDefault, &changed);
-        MigrateLegacyConfigValue(&configText, "LOBBY", "NFSMW", lobbyIdentDefault, &changed);
-        EnsureConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
-        EnsureConfigValue(&configText, "LOBBY", lobbyIdentDefault, &changed);
+        ForceConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
+        ForceConfigValue(&configText, "LOBBY", lobbyIdentDefault, &changed);
     }
 
     const std::string portValue = EnsureConfigValue(&configText, "PORT", "9900", &changed);
@@ -1951,17 +1931,9 @@ bool ApplyServerConfigCompatibility(
                   << (resolved.ug2BeaconEmulation ? "enabled" : "disabled") << '\n';
     }
 
-    const auto currentFixups = GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS");
-    if (!currentFixups.has_value())
-    {
-        configText = UpsertConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS", "1");
-        changed = true;
-        std::cout << "NFSLAN: Added ENABLE_GAME_ADDR_FIXUPS=1 (recommended).\n";
-    }
+    ForceConfigValue(&configText, "ENABLE_GAME_ADDR_FIXUPS", "1", &changed);
 
-    const bool enableAddrFixups = IsTruthy(GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS").value_or("0"));
-
-    if (underground2Server && enableAddrFixups)
+    if (underground2Server)
     {
         ForceConfigValue(&configText, "MADDR", addrValue, &changed);
         ForceConfigValue(&configText, "RADDR", addrValue, &changed);
@@ -1969,17 +1941,7 @@ bool ApplyServerConfigCompatibility(
         ForceConfigValue(&configText, "MPORT", portValue, &changed);
         ForceConfigValue(&configText, "RPORT", portValue, &changed);
         ForceConfigValue(&configText, "APORT", portValue, &changed);
-        std::cout << "NFSLAN: ENABLE_GAME_ADDR_FIXUPS=1 -> UG2 endpoints aligned with ADDR/PORT.\n";
-    }
-
-    if (!underground2Server)
-    {
-        if (resolved.sameMachineMode && !enableAddrFixups)
-        {
-            configText = UpsertConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS", "1");
-            changed = true;
-            std::cout << "NFSLAN: Same-machine mode enabled -> ENABLE_GAME_ADDR_FIXUPS=1\n";
-        }
+        std::cout << "NFSLAN: UG2 endpoints aligned with ADDR/PORT.\n";
     }
 
     if (underground2Server)
@@ -2533,7 +2495,7 @@ int NFSLANWorkerMain(int argc, char* argv[])
         return -1;
     }
 
-    bDisablePatching = options.disablePatching;
+    bDisablePatching = false;
     gSameMachineModeEnabled.store(options.sameMachineMode);
     gLocalEmulationEnabled.store(options.localEmulation);
     gLanDiscoveryPort.store(kDefaultLanDiscoveryPort);
