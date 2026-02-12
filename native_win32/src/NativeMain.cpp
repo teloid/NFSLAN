@@ -36,7 +36,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-bind-match-1";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-clean-path-1";
 constexpr int kGameProfileMostWanted = 0;
 constexpr int kGameProfileUnderground2 = 1;
 
@@ -53,18 +53,13 @@ enum ControlId : int
     kIdPort,
     kIdAddr,
     kIdU2StartMode,
-    kIdForceLocal,
-    kIdLocalEmulation,
     kIdEnableAddrFixups,
-    kIdLanDiag,
     kIdDisablePatching,
     kIdLoadConfig,
     kIdSaveConfig,
     kIdStart,
     kIdStartU2SamePc,
-    kIdStartBeaconOnly,
     kIdStop,
-    kIdOpenRelay,
     kIdOpenU2Patcher,
     kIdConfigEditor,
     kIdLogView
@@ -81,19 +76,14 @@ struct AppState
     HWND portEdit = nullptr;
     HWND addrEdit = nullptr;
     HWND u2StartModeEdit = nullptr;
-    HWND forceLocalCheck = nullptr;
-    HWND localEmulationCheck = nullptr;
     HWND enableAddrFixupsCheck = nullptr;
-    HWND lanDiagCheck = nullptr;
     HWND disablePatchingCheck = nullptr;
     HWND configEditor = nullptr;
     HWND logView = nullptr;
     HWND runtimeSummaryLabel = nullptr;
     HWND startButton = nullptr;
     HWND startU2SamePcButton = nullptr;
-    HWND startBeaconOnlyButton = nullptr;
     HWND stopButton = nullptr;
-    HWND openRelayButton = nullptr;
     HWND openU2PatcherButton = nullptr;
     HWND browseU2GameExeButton = nullptr;
 
@@ -116,6 +106,61 @@ bool launchU2PatcherForGame(
     const std::wstring& injectName,
     int injectPort,
     const std::wstring& injectIp);
+std::wstring formatIpv4FromNetworkOrder(DWORD addressNetworkOrder);
+
+bool tryGetPrimaryLanIpv4(std::wstring* ipOut)
+{
+    if (!ipOut)
+    {
+        return false;
+    }
+
+    ULONG bufferSize = 0;
+    ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    ULONG result = GetAdaptersAddresses(AF_INET, flags, nullptr, nullptr, &bufferSize);
+    if (result != ERROR_BUFFER_OVERFLOW || bufferSize == 0)
+    {
+        return false;
+    }
+
+    std::vector<BYTE> buffer(bufferSize);
+    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+    result = GetAdaptersAddresses(AF_INET, flags, nullptr, adapters, &bufferSize);
+    if (result != NO_ERROR)
+    {
+        return false;
+    }
+
+    for (IP_ADAPTER_ADDRESSES* adapter = adapters; adapter != nullptr; adapter = adapter->Next)
+    {
+        if (adapter->OperStatus != IfOperStatusUp || adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK)
+        {
+            continue;
+        }
+
+        for (IP_ADAPTER_UNICAST_ADDRESS* unicast = adapter->FirstUnicastAddress;
+             unicast != nullptr;
+             unicast = unicast->Next)
+        {
+            if (!unicast->Address.lpSockaddr || unicast->Address.lpSockaddr->sa_family != AF_INET)
+            {
+                continue;
+            }
+
+            auto* sin = reinterpret_cast<sockaddr_in*>(unicast->Address.lpSockaddr);
+            const std::wstring address = formatIpv4FromNetworkOrder(sin->sin_addr.s_addr);
+            if (address.empty() || address == L"127.0.0.1" || address == L"0.0.0.0")
+            {
+                continue;
+            }
+
+            *ipOut = address;
+            return true;
+        }
+    }
+
+    return false;
+}
 
 std::wstring formatIpv4FromNetworkOrder(DWORD addressNetworkOrder)
 {
@@ -210,6 +255,13 @@ bool tryGetWorkerListeningIpForPort(DWORD workerPid, uint16_t port, std::wstring
 
     if (hasWildcard)
     {
+        std::wstring lanIp;
+        if (tryGetPrimaryLanIpv4(&lanIp))
+        {
+            *ipOut = lanIp;
+            return true;
+        }
+
         *ipOut = L"127.0.0.1";
         return true;
     }
@@ -1064,70 +1116,6 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
         warnings.push_back(L"GAMEFILE is not set; worker will try gamefile.bin/gameplay.bin automatically.");
     }
 
-    if (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED)
-    {
-        if (!equalCaseInsensitive(addr, L"127.0.0.1"))
-        {
-            warnings.push_back(L"FORCE_LOCAL is enabled but ADDR is not 127.0.0.1.");
-        }
-        if (port == 9900)
-        {
-            warnings.push_back(
-                L"Same-machine mode with PORT=9900 may conflict with client bind on some patches.");
-        }
-        if (profile == kGameProfileUnderground2)
-        {
-            warnings.push_back(
-                L"UG2 client has a self-discovery filter in speed2.exe. "
-                L"Use NFSLAN-U2-Patcher when host and client run on the same PC.");
-        }
-    }
-
-    const bool localEmulationEnabled =
-        parseBoolConfigValue(getConfigValue(configText, L"LOCAL_EMULATION"), false);
-    if (localEmulationEnabled)
-    {
-        int discoveryPort = 9999;
-        const std::wstring discoveryPortText = trim(getConfigValue(configText, L"DISCOVERY_PORT"));
-        if (!discoveryPortText.empty())
-        {
-            if (!tryParseIntRange(discoveryPortText, 1, 65535, &discoveryPort))
-            {
-                errors.push_back(L"DISCOVERY_PORT must be an integer in range 1..65535 when LOCAL_EMULATION is enabled.");
-            }
-        }
-
-        const std::wstring discoveryAddr = trim(getConfigValue(configText, L"DISCOVERY_ADDR"));
-        if (discoveryAddr.empty())
-        {
-            warnings.push_back(
-                L"LOCAL_EMULATION is enabled and DISCOVERY_ADDR is empty; worker will auto-detect a local IPv4 (fallback 127.0.0.1).");
-        }
-        else if (equalCaseInsensitive(discoveryAddr, L"0.0.0.0"))
-        {
-            warnings.push_back(L"DISCOVERY_ADDR=0.0.0.0 is not probeable; worker will fallback to 127.0.0.1.");
-        }
-
-        if (discoveryPort != 9999)
-        {
-            warnings.push_back(
-                L"DISCOVERY_PORT is not 9999. NFS LAN discovery usually expects UDP 9999.");
-        }
-
-        if (!equalCaseInsensitive(addr, L"127.0.0.1"))
-        {
-            warnings.push_back(
-                L"LOCAL_EMULATION works best with ADDR=127.0.0.1 (same-machine loopback hosting).");
-        }
-
-        if (profile == kGameProfileUnderground2)
-        {
-            warnings.push_back(
-                L"LOCAL_EMULATION helps LAN probes, but UG2 client may still hide local servers "
-                L"without a speed2.exe self-filter patch.");
-        }
-    }
-
     if (port > 0 && !lobbyIdent.empty())
     {
         if (isServerIdentityLockedLocally(lobbyIdent, port))
@@ -1147,27 +1135,14 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
         }
         else
         {
-            const bool sameMachineEnabled = (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
-            const bool allowBusyDiscoveryPort = sameMachineEnabled || localEmulationEnabled;
             int udp9999Err = 0;
             if (isPortBusyLocalBind(SOCK_DGRAM, IPPROTO_UDP, 9999, &udp9999Err))
             {
                 const std::wstring details =
                     L"UDP port 9999 is already in use locally (WSA " + std::to_wstring(udp9999Err) + L").";
-
-                if (allowBusyDiscoveryPort)
-                {
-                    warnings.push_back(
-                        details
-                        + L" Continuing because same-machine/local-emulation mode is enabled. "
-                          L"Client discovery can still be unreliable while another process owns 9999.");
-                }
-                else
-                {
-                    errors.push_back(
-                        details
-                        + L" Stop in-game host/server or conflicting relay before launching.");
-                }
+                errors.push_back(
+                    details
+                    + L" Stop in-game host/server or conflicting relay before launching.");
             }
 
             const uint16_t servicePort = static_cast<uint16_t>(port);
@@ -1219,7 +1194,6 @@ void setUiRunningState(bool running)
     g_app.running = running;
 
     EnableWindow(g_app.startButton, running ? FALSE : TRUE);
-    EnableWindow(g_app.startBeaconOnlyButton, running ? FALSE : TRUE);
     EnableWindow(g_app.stopButton, running ? TRUE : FALSE);
 
     EnableWindow(g_app.gameCombo, running ? FALSE : TRUE);
@@ -1228,10 +1202,7 @@ void setUiRunningState(bool running)
     EnableWindow(GetDlgItem(g_app.window, kIdBrowseServerDir), running ? FALSE : TRUE);
     EnableWindow(g_app.portEdit, running ? FALSE : TRUE);
     EnableWindow(g_app.addrEdit, running ? FALSE : TRUE);
-    EnableWindow(g_app.forceLocalCheck, running ? FALSE : TRUE);
-    EnableWindow(g_app.localEmulationCheck, running ? FALSE : TRUE);
     EnableWindow(g_app.enableAddrFixupsCheck, running ? FALSE : TRUE);
-    EnableWindow(g_app.lanDiagCheck, running ? FALSE : TRUE);
     EnableWindow(g_app.disablePatchingCheck, running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.window, kIdLoadConfig), running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.window, kIdSaveConfig), running ? FALSE : TRUE);
@@ -1300,19 +1271,8 @@ void syncFieldsFromConfigEditor()
         setWindowTextString(g_app.u2StartModeEdit, L"0");
     }
 
-    const bool forceLocalEnabled = parseBoolConfigValue(getConfigValue(configText, L"FORCE_LOCAL"), false);
-    SendMessageW(g_app.forceLocalCheck, BM_SETCHECK, forceLocalEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
-
-    const bool localEmulationEnabled = parseBoolConfigValue(getConfigValue(configText, L"LOCAL_EMULATION"), false);
-    SendMessageW(g_app.localEmulationCheck, BM_SETCHECK, localEmulationEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
-
     const bool addrFixupsEnabled = parseBoolConfigValue(getConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS"), true);
     SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, addrFixupsEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
-
-    const bool lanDiagEnabled = parseBoolConfigValue(
-        getConfigValue(configText, L"LAN_DIAG"),
-        parseBoolConfigValue(getConfigValue(configText, L"LAN_DIAGNOSTICS"), false));
-    SendMessageW(g_app.lanDiagCheck, BM_SETCHECK, lanDiagEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 void applyFieldsToConfigEditor()
@@ -1350,29 +1310,13 @@ void applyFieldsToConfigEditor()
         configText = upsertConfigValue(configText, L"LOBBY", expectedLobby);
     }
 
-    const bool forceLocalEnabled = (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    configText = upsertConfigValue(configText, L"FORCE_LOCAL", forceLocalEnabled ? L"1" : L"0");
-
-    const bool localEmulationEnabled = (SendMessageW(g_app.localEmulationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    configText = upsertConfigValue(configText, L"LOCAL_EMULATION", localEmulationEnabled ? L"1" : L"0");
+    // Streamlined launcher flow: force-disable legacy same-machine emulation toggles.
+    configText = upsertConfigValue(configText, L"FORCE_LOCAL", L"0");
+    configText = upsertConfigValue(configText, L"LOCAL_EMULATION", L"0");
 
     const bool addrFixupsEnabled = (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
     configText = upsertConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS", addrFixupsEnabled ? L"1" : L"0");
-
-    const bool lanDiagEnabled = (SendMessageW(g_app.lanDiagCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    configText = upsertConfigValue(configText, L"LAN_DIAG", lanDiagEnabled ? L"1" : L"0");
-
-    if (localEmulationEnabled)
-    {
-        configText = upsertConfigValue(configText, L"DISCOVERY_PORT", L"9999");
-
-        std::wstring discoveryAddr = trim(getConfigValue(configText, L"DISCOVERY_ADDR"));
-        if (equalCaseInsensitive(discoveryAddr, L"0.0.0.0"))
-        {
-            // Empty DISCOVERY_ADDR lets worker auto-detect a suitable local LAN IPv4.
-            configText = upsertConfigValue(configText, L"DISCOVERY_ADDR", L"");
-        }
-    }
+    configText = upsertConfigValue(configText, L"LAN_DIAG", L"0");
 
     setWindowTextString(g_app.configEditor, configText);
 }
@@ -1803,21 +1747,15 @@ DWORD WINAPI logReaderThreadProc(LPVOID)
     return 0;
 }
 
-void startWorker(bool beaconOnlyMode)
+void startWorker()
 {
     if (g_app.running)
     {
         return;
     }
 
-    if (beaconOnlyMode && currentGameProfileIndex() != kGameProfileUnderground2)
-    {
-        showError(L"Beacon-only mode currently targets Underground 2 profile. Switch profile to Underground 2.");
-        return;
-    }
-
     std::wstring error;
-    if (!validateStartInput(&error, !beaconOnlyMode))
+    if (!validateStartInput(&error, true))
     {
         showError(error);
         return;
@@ -1857,38 +1795,14 @@ void startWorker(bool beaconOnlyMode)
         commandLine += L" -n";
     }
 
-    if (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED)
-    {
-        commandLine += L" --same-machine";
-    }
-
-    if (SendMessageW(g_app.localEmulationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED)
-    {
-        commandLine += L" --local-emulation";
-    }
-
-    if (SendMessageW(g_app.lanDiagCheck, BM_GETCHECK, 0, 0) == BST_CHECKED)
-    {
-        commandLine += L" --diag-lan";
-    }
-
     if (currentGameProfileIndex() == kGameProfileUnderground2 && !u2ModeText.empty())
     {
         commandLine += L" --u2-mode " + u2ModeText;
     }
 
-    if (beaconOnlyMode)
-    {
-        commandLine += L" --beacon-only";
-    }
-
     appendLogLine(L"UI build tag: " + std::wstring(kUiBuildTag));
     appendLogLine(L"Profile: " + profileName);
     appendLogLine(L"Worker launch mode: " + workerLaunchModeLabel());
-    if (beaconOnlyMode)
-    {
-        appendLogLine(L"Launch mode: beacon-only synthetic UG2 LAN beacon.");
-    }
     appendLogLine(L"Server directory: " + serverDir.wstring());
     appendLogLine(L"Server config: " + currentServerConfigPath().wstring());
 
@@ -1964,7 +1878,7 @@ void startU2SamePcBundle()
 {
     if (currentGameProfileIndex() != kGameProfileUnderground2)
     {
-        showError(L"UG2 Same-PC bundle is available only for Underground 2 profile.");
+        showError(L"UG2 bundle is available only for Underground 2 profile.");
         return;
     }
 
@@ -1985,20 +1899,17 @@ void startU2SamePcBundle()
         showError(L"Selected U2 game executable path is invalid.");
         return;
     }
-
-    SendMessageW(g_app.forceLocalCheck, BM_SETCHECK, BST_CHECKED, 0);
-    SendMessageW(g_app.localEmulationCheck, BM_SETCHECK, BST_CHECKED, 0);
     SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, BST_CHECKED, 0);
-    setWindowTextString(g_app.addrEdit, L"127.0.0.1");
     applyFieldsToConfigEditor();
-    appendLogLine(L"UG2 Same-PC bundle: FORCE_LOCAL=1 LOCAL_EMULATION=1 ADDR=127.0.0.1 ENABLE_GAME_ADDR_FIXUPS=1.");
+    appendLogLine(
+        L"UG2 bundle: launching real worker first, then patcher injects a visible entry that points to worker listener.");
 
     if (!g_app.running)
     {
-        startWorker(false);
+        startWorker();
         if (!g_app.running)
         {
-            appendLogLine(L"UG2 Same-PC bundle aborted: worker failed to start.");
+            appendLogLine(L"UG2 bundle aborted: worker failed to start.");
             return;
         }
     }
@@ -2026,7 +1937,7 @@ void startU2SamePcBundle()
         if (injectIp != detectedIp)
         {
             appendLogLine(
-                L"UG2 Same-PC bundle: overriding inject IP from "
+                L"UG2 bundle: overriding inject IP from "
                 + injectIp
                 + L" to worker listener "
                 + detectedIp
@@ -2039,7 +1950,7 @@ void startU2SamePcBundle()
     else
     {
         appendLogLine(
-            L"UG2 Same-PC bundle warning: could not resolve worker listener address on port "
+            L"UG2 bundle warning: could not resolve worker listener address on port "
             + std::to_wstring(injectPort)
             + L"; using configured IP "
             + injectIp
@@ -2050,11 +1961,11 @@ void startU2SamePcBundle()
 
     if (!launchU2PatcherForGame(gameExePath, injectName, injectPort, injectIp))
     {
-        appendLogLine(L"UG2 Same-PC bundle warning: server is running, but patcher launch failed.");
+        appendLogLine(L"UG2 bundle warning: server is running, but patcher launch failed.");
         return;
     }
 
-    appendLogLine(L"UG2 Same-PC bundle started: worker and patcher are active.");
+    appendLogLine(L"UG2 bundle started: worker and patcher are active.");
 }
 
 void saveSettings()
@@ -2070,23 +1981,8 @@ void saveSettings()
     WritePrivateProfileStringW(L"launcher", L"u2StartMode", trim(getWindowTextString(g_app.u2StartModeEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(
         L"launcher",
-        L"forceLocal",
-        (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
-        path.c_str());
-    WritePrivateProfileStringW(
-        L"launcher",
-        L"localEmulation",
-        (SendMessageW(g_app.localEmulationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
-        path.c_str());
-    WritePrivateProfileStringW(
-        L"launcher",
         L"enableAddrFixups",
         (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
-        path.c_str());
-    WritePrivateProfileStringW(
-        L"launcher",
-        L"lanDiag",
-        (SendMessageW(g_app.lanDiagCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) ? L"1" : L"0",
         path.c_str());
     WritePrivateProfileStringW(
         L"launcher",
@@ -2121,24 +2017,9 @@ void loadSettings()
     setWindowTextString(g_app.addrEdit, readIniValue(L"addr", L"0.0.0.0"));
     setWindowTextString(g_app.u2StartModeEdit, readIniValue(L"u2StartMode", L"0"));
     SendMessageW(
-        g_app.forceLocalCheck,
-        BM_SETCHECK,
-        (readIniValue(L"forceLocal", L"0") == L"1") ? BST_CHECKED : BST_UNCHECKED,
-        0);
-    SendMessageW(
-        g_app.localEmulationCheck,
-        BM_SETCHECK,
-        (readIniValue(L"localEmulation", L"0") == L"1") ? BST_CHECKED : BST_UNCHECKED,
-        0);
-    SendMessageW(
         g_app.enableAddrFixupsCheck,
         BM_SETCHECK,
         (readIniValue(L"enableAddrFixups", L"1") == L"1") ? BST_CHECKED : BST_UNCHECKED,
-        0);
-    SendMessageW(
-        g_app.lanDiagCheck,
-        BM_SETCHECK,
-        (readIniValue(L"lanDiag", L"0") == L"1") ? BST_CHECKED : BST_UNCHECKED,
         0);
 
     const bool disablePatching = (readIniValue(L"disablePatching", L"0") == L"1");
@@ -2397,23 +2278,7 @@ void createUi(HWND window)
         nullptr);
     applyDefaultFontToWindow(g_app.u2StartModeEdit);
 
-    createLabel(window, L"(Underground 2 only, range 0..13)", left + labelWidth + 84, y + 4, 250, rowHeight);
-
-    g_app.lanDiagCheck = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"Deep LAN diagnostics (--diag-lan)",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        left + 470,
-        y,
-        300,
-        rowHeight,
-        window,
-        reinterpret_cast<HMENU>(kIdLanDiag),
-        nullptr,
-        nullptr);
-    applyDefaultFontToWindow(g_app.lanDiagCheck);
-    SendMessageW(g_app.lanDiagCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+    createLabel(window, L"(Underground 2 only, range 0..13)", left + labelWidth + 84, y + 4, 360, rowHeight);
 
     y += rowHeight + rowGap;
 
@@ -2448,38 +2313,6 @@ void createUi(HWND window)
         nullptr,
         nullptr);
     applyDefaultFontToWindow(g_app.addrEdit);
-
-    g_app.forceLocalCheck = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"Same-machine mode (--same-machine)",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        left + 470,
-        y,
-        220,
-        rowHeight,
-        window,
-        reinterpret_cast<HMENU>(kIdForceLocal),
-        nullptr,
-        nullptr);
-    applyDefaultFontToWindow(g_app.forceLocalCheck);
-    SendMessageW(g_app.forceLocalCheck, BM_SETCHECK, BST_UNCHECKED, 0);
-
-    g_app.localEmulationCheck = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"Local emulation bridge (--local-emulation)",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        left + 690,
-        y,
-        270,
-        rowHeight,
-        window,
-        reinterpret_cast<HMENU>(kIdLocalEmulation),
-        nullptr,
-        nullptr);
-    applyDefaultFontToWindow(g_app.localEmulationCheck);
-    SendMessageW(g_app.localEmulationCheck, BM_SETCHECK, BST_UNCHECKED, 0);
 
     y += rowHeight + rowGap;
 
@@ -2547,10 +2380,8 @@ void createUi(HWND window)
     applyDefaultFontToWindow(saveConfigButton);
 
     const int startButtonX = left + 2 * (buttonWidth + 8);
-    const int beaconOnlyButtonX = left + 3 * (buttonWidth + 8);
-    const int stopButtonX = beaconOnlyButtonX + (buttonWidth + 30) + 8;
-    const int relayButtonX = stopButtonX + buttonWidth + 8;
-    const int samePcButtonX = relayButtonX + (buttonWidth + 30) + 8;
+    const int stopButtonX = startButtonX + buttonWidth + 8;
+    const int samePcButtonX = stopButtonX + buttonWidth + 8;
     const int patcherButtonX = samePcButtonX + (buttonWidth + 40) + 8;
 
     g_app.startButton = CreateWindowExW(
@@ -2568,21 +2399,6 @@ void createUi(HWND window)
         nullptr);
     applyDefaultFontToWindow(g_app.startButton);
 
-    g_app.startBeaconOnlyButton = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"Beacon only",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        beaconOnlyButtonX,
-        y,
-        buttonWidth + 30,
-        rowHeight,
-        window,
-        reinterpret_cast<HMENU>(kIdStartBeaconOnly),
-        nullptr,
-        nullptr);
-    applyDefaultFontToWindow(g_app.startBeaconOnlyButton);
-
     g_app.stopButton = CreateWindowExW(
         0,
         L"BUTTON",
@@ -2598,25 +2414,10 @@ void createUi(HWND window)
         nullptr);
     applyDefaultFontToWindow(g_app.stopButton);
 
-    g_app.openRelayButton = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"Relay tool",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        relayButtonX,
-        y,
-        buttonWidth + 30,
-        rowHeight,
-        window,
-        reinterpret_cast<HMENU>(kIdOpenRelay),
-        nullptr,
-        nullptr);
-    applyDefaultFontToWindow(g_app.openRelayButton);
-
     g_app.startU2SamePcButton = CreateWindowExW(
         0,
         L"BUTTON",
-        L"UG2 Same-PC",
+        L"UG2 Bundle",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         samePcButtonX,
         y,
@@ -2700,64 +2501,12 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
         }
         return 0;
 
-    case kIdForceLocal:
-        if (commandCode == BN_CLICKED)
-        {
-            const bool enabled = (SendMessageW(g_app.forceLocalCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
-            if (enabled)
-            {
-                SendMessageW(g_app.localEmulationCheck, BM_SETCHECK, BST_CHECKED, 0);
-                SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, BST_CHECKED, 0);
-                setWindowTextString(g_app.addrEdit, L"127.0.0.1");
-                appendLogLine(
-                    L"Same-machine mode enabled: FORCE_LOCAL=1, LOCAL_EMULATION=1, "
-                    L"ADDR=127.0.0.1, ENABLE_GAME_ADDR_FIXUPS=1");
-            }
-            else
-            {
-                appendLogLine(L"Same-machine mode disabled in UI.");
-            }
-            applyFieldsToConfigEditor();
-        }
-        return 0;
-
-    case kIdLocalEmulation:
-        if (commandCode == BN_CLICKED)
-        {
-            const bool enabled = (SendMessageW(g_app.localEmulationCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
-            if (enabled)
-            {
-                SendMessageW(g_app.forceLocalCheck, BM_SETCHECK, BST_CHECKED, 0);
-                SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, BST_CHECKED, 0);
-                if (!equalCaseInsensitive(trim(getWindowTextString(g_app.addrEdit)), L"127.0.0.1"))
-                {
-                    setWindowTextString(g_app.addrEdit, L"127.0.0.1");
-                }
-                appendLogLine(L"Local emulation enabled: LOCAL_EMULATION=1, FORCE_LOCAL=1, DISCOVERY_PORT=9999.");
-            }
-            else
-            {
-                appendLogLine(L"Local emulation disabled in UI.");
-            }
-            applyFieldsToConfigEditor();
-        }
-        return 0;
-
     case kIdEnableAddrFixups:
         if (commandCode == BN_CLICKED)
         {
             const bool enabled = (SendMessageW(g_app.enableAddrFixupsCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
             appendLogLine(
                 std::wstring(L"ENABLE_GAME_ADDR_FIXUPS set to ") + (enabled ? L"1" : L"0") + L" in UI.");
-            applyFieldsToConfigEditor();
-        }
-        return 0;
-
-    case kIdLanDiag:
-        if (commandCode == BN_CLICKED)
-        {
-            const bool enabled = (SendMessageW(g_app.lanDiagCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
-            appendLogLine(std::wstring(L"LAN_DIAG set to ") + (enabled ? L"1" : L"0") + L" in UI.");
             applyFieldsToConfigEditor();
         }
         return 0;
@@ -2823,23 +2572,15 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
         return 0;
 
     case kIdStart:
-        startWorker(false);
+        startWorker();
         return 0;
 
     case kIdStartU2SamePc:
         startU2SamePcBundle();
         return 0;
 
-    case kIdStartBeaconOnly:
-        startWorker(true);
-        return 0;
-
     case kIdStop:
         stopWorker();
-        return 0;
-
-    case kIdOpenRelay:
-        launchRelayUi();
         return 0;
 
     case kIdOpenU2Patcher:
