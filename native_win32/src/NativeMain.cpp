@@ -58,6 +58,7 @@ enum ControlId : int
     kIdLoadConfig,
     kIdSaveConfig,
     kIdStart,
+    kIdStartBeaconOnly,
     kIdStop,
     kIdOpenRelay,
     kIdOpenU2Patcher,
@@ -84,6 +85,7 @@ struct AppState
     HWND logView = nullptr;
     HWND runtimeSummaryLabel = nullptr;
     HWND startButton = nullptr;
+    HWND startBeaconOnlyButton = nullptr;
     HWND stopButton = nullptr;
     HWND openRelayButton = nullptr;
     HWND openU2PatcherButton = nullptr;
@@ -1050,6 +1052,7 @@ void setUiRunningState(bool running)
     g_app.running = running;
 
     EnableWindow(g_app.startButton, running ? FALSE : TRUE);
+    EnableWindow(g_app.startBeaconOnlyButton, running ? FALSE : TRUE);
     EnableWindow(g_app.stopButton, running ? TRUE : FALSE);
 
     EnableWindow(g_app.gameCombo, running ? FALSE : TRUE);
@@ -1438,7 +1441,7 @@ void cleanupWorkerResources()
     setUiRunningState(false);
 }
 
-bool validateStartInput(std::wstring* errorOut)
+bool validateStartInput(std::wstring* errorOut, bool requireServerDll = true)
 {
     const std::wstring serverName = trim(getWindowTextString(g_app.serverNameEdit));
     if (serverName.empty())
@@ -1455,7 +1458,7 @@ bool validateStartInput(std::wstring* errorOut)
     }
 
     const std::filesystem::path serverDll = serverDir / "server.dll";
-    if (!std::filesystem::exists(serverDll))
+    if (requireServerDll && !std::filesystem::exists(serverDll))
     {
         *errorOut = L"server.dll was not found in selected server directory.";
         return false;
@@ -1495,15 +1498,21 @@ DWORD WINAPI logReaderThreadProc(LPVOID)
     return 0;
 }
 
-void startWorker()
+void startWorker(bool beaconOnlyMode)
 {
     if (g_app.running)
     {
         return;
     }
 
+    if (beaconOnlyMode && currentGameProfileIndex() != kGameProfileUnderground2)
+    {
+        showError(L"Beacon-only mode currently targets Underground 2 profile. Switch profile to Underground 2.");
+        return;
+    }
+
     std::wstring error;
-    if (!validateStartInput(&error))
+    if (!validateStartInput(&error, !beaconOnlyMode))
     {
         showError(error);
         return;
@@ -1563,9 +1572,18 @@ void startWorker()
         commandLine += L" --u2-mode " + u2ModeText;
     }
 
+    if (beaconOnlyMode)
+    {
+        commandLine += L" --beacon-only";
+    }
+
     appendLogLine(L"UI build tag: " + std::wstring(kUiBuildTag));
     appendLogLine(L"Profile: " + profileName);
     appendLogLine(L"Worker launch mode: " + workerLaunchModeLabel());
+    if (beaconOnlyMode)
+    {
+        appendLogLine(L"Launch mode: beacon-only synthetic UG2 LAN beacon.");
+    }
     appendLogLine(L"Server directory: " + serverDir.wstring());
     appendLogLine(L"Server config: " + currentServerConfigPath().wstring());
 
@@ -2091,12 +2109,18 @@ void createUi(HWND window)
         nullptr);
     applyDefaultFontToWindow(saveConfigButton);
 
+    const int startButtonX = left + 2 * (buttonWidth + 8);
+    const int beaconOnlyButtonX = left + 3 * (buttonWidth + 8);
+    const int stopButtonX = beaconOnlyButtonX + (buttonWidth + 30) + 8;
+    const int relayButtonX = stopButtonX + buttonWidth + 8;
+    const int patcherButtonX = relayButtonX + (buttonWidth + 30) + 8;
+
     g_app.startButton = CreateWindowExW(
         0,
         L"BUTTON",
         L"Start",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        left + 2 * (buttonWidth + 8),
+        startButtonX,
         y,
         buttonWidth,
         rowHeight,
@@ -2106,12 +2130,27 @@ void createUi(HWND window)
         nullptr);
     applyDefaultFontToWindow(g_app.startButton);
 
+    g_app.startBeaconOnlyButton = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"Beacon only",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        beaconOnlyButtonX,
+        y,
+        buttonWidth + 30,
+        rowHeight,
+        window,
+        reinterpret_cast<HMENU>(kIdStartBeaconOnly),
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.startBeaconOnlyButton);
+
     g_app.stopButton = CreateWindowExW(
         0,
         L"BUTTON",
         L"Stop",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        left + 3 * (buttonWidth + 8),
+        stopButtonX,
         y,
         buttonWidth,
         rowHeight,
@@ -2126,7 +2165,7 @@ void createUi(HWND window)
         L"BUTTON",
         L"Relay tool",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        left + 4 * (buttonWidth + 8),
+        relayButtonX,
         y,
         buttonWidth + 30,
         rowHeight,
@@ -2141,7 +2180,7 @@ void createUi(HWND window)
         L"BUTTON",
         L"U2 patcher",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        left + 5 * (buttonWidth + 8),
+        patcherButtonX,
         y,
         buttonWidth + 30,
         rowHeight,
@@ -2321,7 +2360,11 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
         return 0;
 
     case kIdStart:
-        startWorker();
+        startWorker(false);
+        return 0;
+
+    case kIdStartBeaconOnly:
+        startWorker(true);
         return 0;
 
     case kIdStop:

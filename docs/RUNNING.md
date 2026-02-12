@@ -31,6 +31,7 @@ Do not run server directly from your game installation folder; use a separate se
    - `U2_START_MODE`: Underground 2-only StartServer mode (`0..13`, default `0`)
 7. Edit advanced keys in `server.cfg` editor and save.
 8. Start server.
+   - For UG2 discovery-only diagnostics, use `Beacon only` button in native UI (launches worker with `--beacon-only`).
 9. Verify startup diagnostics in GUI log:
    - UI build tag
    - executable path

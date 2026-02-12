@@ -15,6 +15,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 - Native Win32 relay app includes beacon capture/diff workflow (in-game sample vs standalone sample) with detailed report export
 - Relay capture path includes UDP bind + raw fallback sniff mode when `9999` is already occupied (admin recommended)
 - Native Win32 launcher includes explicit `FORCE_LOCAL`, `LOCAL_EMULATION`, and `ENABLE_GAME_ADDR_FIXUPS` toggles for same-machine host+client scenarios
+- Native Win32 launcher includes `Beacon only` button for UG2 discovery-only visibility testing
 - Native Win32 launcher includes `U2_START_MODE` (`0..13`) and `LAN_DIAG` controls with profile-aware preflight validation before launch
 - Native Win32 launcher preflight now blocks local port conflicts (`UDP 9999`, service UDP/TCP `PORT`) and duplicate server identity (`LOBBY_IDENT` + `PORT`)
 - Native Win32 launcher logs build tag, executable path, worker launch mode, and effective profile/runtime paths at startup
