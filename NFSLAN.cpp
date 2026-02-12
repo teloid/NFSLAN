@@ -742,7 +742,8 @@ std::array<char, kUg2LanBeaconLength> BuildSyntheticUg2Beacon(const std::string&
     const std::string effectiveLobby = TrimAscii(lobbyIdent).empty() ? "NFSU2NA" : TrimAscii(lobbyIdent);
     const std::string effectiveServerName = TrimAscii(serverName).empty() ? "NAME" : TrimAscii(serverName);
     const int effectivePort = (std::max)(1, (std::min)(65535, port));
-    const std::string stats = std::to_string(effectivePort) + "|1";
+    // Keep stock-like stats for maximum compatibility with UG2 client parsing.
+    const std::string stats = std::to_string(effectivePort) + "|0";
 
     WriteAsciiFieldToBuffer(packet.data(), packet.size(), kUg2IdentOffset, kUg2IdentMax, effectiveLobby);
     WriteAsciiFieldToBuffer(packet.data(), packet.size(), kUg2NameOffset, kUg2NameMax, effectiveServerName);
@@ -1302,6 +1303,8 @@ void RunUg2BeaconEmulator()
         setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&allowBroadcast), sizeof(allowBroadcast));
         int reuseAddress = 1;
         setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuseAddress), sizeof(reuseAddress));
+        DWORD recvTimeoutMs = 120;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&recvTimeoutMs), sizeof(recvTimeoutMs));
 
         bool boundTo9999 = false;
         sockaddr_in bindAddr{};
@@ -1345,6 +1348,7 @@ void RunUg2BeaconEmulator()
             std::cout << "NFSLAN: UG2 beacon emulator sends with source port 9999.\n";
         }
 
+        bool loggedFirstQuery = false;
         while (gUg2BeaconEmuRunning.load())
         {
             const auto packet = BuildSyntheticUg2Beacon(
@@ -1393,6 +1397,63 @@ void RunUg2BeaconEmulator()
             {
                 std::cerr << "NFSLAN: WARNING - UG2 beacon emulator send failed (WSA error "
                           << WSAGetLastError() << ").\n";
+            }
+
+            // Query-response path: reply directly when a LAN discovery probe arrives.
+            for (int i = 0; i < 6 && gUg2BeaconEmuRunning.load(); ++i)
+            {
+                std::array<char, kUg2LanBeaconLength> incoming{};
+                sockaddr_in from{};
+                int fromLen = sizeof(from);
+                const int received = recvfrom(
+                    sock,
+                    incoming.data(),
+                    static_cast<int>(incoming.size()),
+                    0,
+                    reinterpret_cast<sockaddr*>(&from),
+                    &fromLen);
+
+                if (received <= 0)
+                {
+                    break;
+                }
+
+                if (!IsLanDiscoveryPacket(incoming.data(), received))
+                {
+                    continue;
+                }
+
+                // Typical UG2 search probe has '?' at byte 8.
+                if (incoming[8] != '?')
+                {
+                    continue;
+                }
+
+                if (!loggedFirstQuery)
+                {
+                    loggedFirstQuery = true;
+                    const char* fromIp = inet_ntoa(from.sin_addr);
+                    std::cout << "NFSLAN: UG2 beacon emulator received LAN query from "
+                              << (fromIp ? fromIp : "unknown")
+                              << ":" << ntohs(from.sin_port) << ".\n";
+                }
+
+                const int replied = sendto(
+                    sock,
+                    packet.data(),
+                    static_cast<int>(packet.size()),
+                    0,
+                    reinterpret_cast<const sockaddr*>(&from),
+                    sizeof(from));
+                if (replied < 0)
+                {
+                    std::cerr << "NFSLAN: WARNING - UG2 beacon emulator direct query reply failed (WSA error "
+                              << WSAGetLastError() << ").\n";
+                }
+                else if (gLanDiagEnabled.load() && ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 120))
+                {
+                    LogUg2LanBeaconDiag("beacon-emu-query-reply", packet.data(), static_cast<int>(packet.size()), false);
+                }
             }
 
             Sleep(1000);
