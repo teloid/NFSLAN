@@ -598,7 +598,7 @@ bool injectSyntheticLanEntry(
     const std::string ident = "NFSU2NA";
     const std::string name = injectedName.empty() ? "NAME" : injectedName;
     const int clampedPort = (std::max)(1, (std::min)(65535, injectedPort));
-    const std::string stats = std::to_string(clampedPort) + "|0";
+    const std::string stats = std::to_string(clampedPort) + "|1";
     const std::string transport = "TCP:~1:1024\tUDP:~1:1024";
 
     if (!writeRemoteZeroedString(process, entry + kLanEntryIdentOffset, 8, ident)
@@ -853,7 +853,7 @@ int wmain(int argc, wchar_t* argv[])
         + std::wstring(injectNameAscii.begin(), injectNameAscii.end())
         + L"' stats='"
         + std::to_wstring(injectPort)
-        + L"|0' addr="
+        + L"|1' addr="
         + (injectAddrOverride.has_value() ? formatIpv4StoredOrder(*injectAddrOverride) : L"<auto>")
         + L".");
 

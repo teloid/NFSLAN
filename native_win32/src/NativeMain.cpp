@@ -1420,12 +1420,7 @@ void launchU2Patcher()
                 injectIp = L"127.0.0.1";
             }
 
-            std::wstring injectName = trim(getWindowTextString(g_app.serverNameEdit));
-            if (injectName.empty())
-            {
-                injectName = L"NAME";
-            }
-
+            const std::wstring injectName = L"NAME";
             launchU2PatcherForGame(gamePath, injectName, injectPort, injectIp);
             return;
         }
@@ -1627,7 +1622,7 @@ bool launchU2PatcherForGame(
         + std::to_wstring(injectPort)
         + L", ip="
         + injectIp
-        + L").");
+        + L", stats='port|1').");
     return true;
 }
 
@@ -1863,11 +1858,7 @@ void startU2SamePcBundle()
         injectIp = L"127.0.0.1";
     }
 
-    std::wstring injectName = trim(getWindowTextString(g_app.serverNameEdit));
-    if (injectName.empty())
-    {
-        injectName = L"NAME";
-    }
+    const std::wstring injectName = L"NAME";
 
     if (!launchU2PatcherForGame(gameExePath, injectName, injectPort, injectIp))
     {
