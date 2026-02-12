@@ -980,6 +980,36 @@ void refreshProfileSpecificControls()
     }
 }
 
+enum class ServerDllFlavor
+{
+    Unknown,
+    Underground2,
+    MostWanted
+};
+
+ServerDllFlavor detectServerDllFlavor(const std::filesystem::path& dllPath)
+{
+    std::ifstream file(dllPath, std::ios::binary);
+    if (!file)
+    {
+        return ServerDllFlavor::Unknown;
+    }
+
+    std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    const bool hasU2 = (bytes.find("NFSU2NA") != std::string::npos);
+    const bool hasMw = (bytes.find("NFSMWNA") != std::string::npos);
+
+    if (hasU2 && !hasMw)
+    {
+        return ServerDllFlavor::Underground2;
+    }
+    if (hasMw && !hasU2)
+    {
+        return ServerDllFlavor::MostWanted;
+    }
+    return ServerDllFlavor::Unknown;
+}
+
 bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std::wstring* blockingErrorOut)
 {
     const std::wstring configText = getWindowTextString(g_app.configEditor);
@@ -1222,36 +1252,6 @@ bool writeTextFile(const std::filesystem::path& path, const std::wstring& text)
     const std::string bytes = toUtf8(text);
     file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     return file.good();
-}
-
-enum class ServerDllFlavor
-{
-    Unknown,
-    Underground2,
-    MostWanted
-};
-
-ServerDllFlavor detectServerDllFlavor(const std::filesystem::path& dllPath)
-{
-    std::ifstream file(dllPath, std::ios::binary);
-    if (!file)
-    {
-        return ServerDllFlavor::Unknown;
-    }
-
-    std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    const bool hasU2 = (bytes.find("NFSU2NA") != std::string::npos);
-    const bool hasMw = (bytes.find("NFSMWNA") != std::string::npos);
-
-    if (hasU2 && !hasMw)
-    {
-        return ServerDllFlavor::Underground2;
-    }
-    if (hasMw && !hasU2)
-    {
-        return ServerDllFlavor::MostWanted;
-    }
-    return ServerDllFlavor::Unknown;
 }
 
 void syncFieldsFromConfigEditor()
