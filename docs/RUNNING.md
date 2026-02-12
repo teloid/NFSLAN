@@ -1,153 +1,58 @@
-# Runtime Guide
+# Runtime Guide (U2-focused)
 
-## Required files per server instance
+## Intended flow
 
-In your chosen server directory, place:
+1. Run `NFSLAN-GUI.exe` as Administrator.
+2. Set `Server name`.
+3. Set `Server directory` (must contain `server.dll` + `server.cfg`).
+4. Set `U2 game EXE` (`SPEED2.EXE`).
+5. Click `UG2 Bundle (Recommended)`.
 
-- `server.dll`
+This launches:
+
+- standalone worker server process
+- U2 patcher for same-PC server visibility/join
+
+## Manual fallback
+
+- `Start`: starts worker only.
+- `Stop`: stops worker process.
+
+Use this when you want server runtime without game patch launcher.
+
+## Key config fields
+
+- `PORT`: server port (`9900` default)
+- `ADDR`: server bind/identity address
+- `U2_START_MODE`: `0..13` (`0` default)
+- `LOBBY_IDENT`: must be `NFSU2NA`
+- `LOBBY`: must be `NFSU2NA`
+
+The launcher enforces U2 protocol IDs and writes compatibility values before start.
+
+## Required files in server directory
+
+- `server.dll` (U2)
 - `server.cfg`
-- a valid game report file (`gamefile.bin` and/or `gameplay.bin`) with expected header
+- optional game report file (`gamefile.bin` or compatible `gameplay.bin`)
 
-Use the correct `server.dll` for the selected game profile.
-Do not run server directly from your game installation folder; use a separate server folder copy.
+## Common startup checks
 
-## Start from GUI
+Preflight blocks launch when:
 
-1. Open launcher (`NFSLAN-GUI`).
-2. Select profile:
-   - Most Wanted (2005): use MW `server.dll`
-   - Underground 2: use UG2 `server.dll`
-   - If `MW`/`U2` subfolders exist next to the GUI EXE, launcher auto-selects them as profile defaults.
-3. Set `Server name`.
-4. Set `Server directory` where `server.dll` and `server.cfg` exist.
-5. Configure `PORT` and `ADDR` fields.
-6. Configure compatibility flags:
-   - `FORCE_LOCAL`: enable when hosting and playing from the same machine (UI also switches `ADDR` to `127.0.0.1`)
-   - `LOCAL_EMULATION`: enables worker-side LAN discovery emulation bridge (`--local-emulation`)
-   - `UG2_BEACON_EMULATION`: enables UG2 synthetic beacon fallback (visibility-first diagnostics)
-   - `DISCOVERY_ADDR`/`DISCOVERY_PORT`: emulation probe endpoint (`DISCOVERY_PORT` defaults to `9999`; empty `DISCOVERY_ADDR` auto-detects local IPv4, fallback `127.0.0.1`)
-   - `ENABLE_GAME_ADDR_FIXUPS`: keep enabled (recommended for mixed local/public address setups)
-   - `LAN_DIAG`: optional deep LAN discovery diagnostics (verbose packet-level logs)
-   - `U2_START_MODE`: Underground 2-only StartServer mode (`0..13`, default `0`)
-7. Edit advanced keys in `server.cfg` editor and save.
-8. Start server.
-   - For UG2 discovery-only diagnostics, use `Beacon only` button in native UI (launches worker with `--beacon-only`).
-9. Verify startup diagnostics in GUI log:
-   - UI build tag
-   - executable path
-   - worker launch mode
-   - selected profile
-   - effective server directory and `server.cfg` path
-10. For Underground 2 same-machine play, set `U2 game EXE` and click `UG2 Same-PC`.
-    - This one-click flow enforces same-machine config, starts worker, and launches patcher with matching injected server name/port/IP.
+- `PORT` is invalid.
+- `ADDR` is empty.
+- `server.dll` looks like MW profile.
+- local ports are already occupied (`UDP 9999`, service `PORT`).
+- same identity already running (`LOBBY_IDENT + PORT`).
 
-## Worker mode behavior
+## Same-PC behavior
 
-- Native single-EXE (Win32/x86 embed): GUI launches itself with `--worker` internally.
-- Native x64 GUI mode: GUI launches external `NFSLAN.exe` worker.
-- Qt launcher mode: same as above depending on your build options.
-- Console worker also supports `--same-machine` (`--local-host` alias) to force same-PC compatibility values in `server.cfg`.
-- Console worker options:
-  - `--local-emulation`: enable local LAN discovery emulation bridge (same effect as `LOCAL_EMULATION=1`)
-  - `--ug2-beacon-emu`: enable UG2 synthetic beacon broadcaster in normal worker mode
-  - `--beacon-only`: run synthetic UG2 beacon broadcaster without loading `server.dll` (discovery visibility test mode)
-  - `--u2-mode <0..13>`: sets UG2 StartServer mode and writes `U2_START_MODE`.
-  - `--diag-lan`: enables deep LAN diagnostics (same as `LAN_DIAG=1`).
-- Worker applies profile-specific config normalization:
-  - MW: keeps `ENABLE_GAME_ADDR_FIXUPS` enabled and mirrors `ADDR/PORT` to MW auxiliary keys.
-  - UG2: mirrors `ADDR/PORT` to UG2 keys (`MADDR/RADDR/AADDR`, `MPORT/RPORT/APORT`) when missing.
-  - Both profiles: ensures non-empty `LOBBY_IDENT`/`LOBBY` defaults (`NFSMWNA` for MW, `NFSU2NA` for UG2) when missing.
-- Worker validates game report file header (`ident=0x9A3E`, `version=2`) and auto-selects compatible file from `GAMEFILE`, `gamefile.bin`, `gameplay.bin`.
+Bundle mode is the supported way for same-machine host+client.
 
-## Internet notes
+If discovery still fails:
 
-If logs show slave update with a local/private address such as `192.168.x.x`, remote internet players will not join correctly.
-
-For internet hosting:
-
-- Set `ADDR` to public IP or DNS name.
-- Forward/open UDP ports required by your config (`PORT` and related service ports if customized).
-- Ensure client patch setup matches your server setup (see `docs/CLIENT_SETUP.md`).
-
-## Same-machine host + client notes
-
-If the host also runs the game client on the same Windows machine:
-
-- Enable `FORCE_LOCAL`.
-- Enable `LOCAL_EMULATION` (or launch with `--local-emulation`).
-- Keep `ENABLE_GAME_ADDR_FIXUPS=1`.
-- Use `--same-machine` from worker/GUI so local bind/address keys are forced to loopback.
-- If local client still cannot find/join, test a non-default `PORT` instead of `9900` to avoid client/server UDP bind conflicts in some patch sets.
-- For Underground 2 specifically, use `UG2 Same-PC` button in native UI (or run `NFSLAN-U2-Patcher.exe` manually) while the game is running.
-  The client (`speed2.exe`) has a self-discovery filter that can hide standalone servers on the same PC even when beacon packets look correct.
-- If UG2 still does not show server entries, enable synthetic beacon fallback (`UG2_BEACON_EMULATION=1` or `--ug2-beacon-emu`).
-- For pure discovery testing independent of `server.dll`, use `--beacon-only` mode.
-
-## Preflight validation
-
-Before launch, native UI now performs profile-aware `server.cfg` validation and blocks start on critical issues (for example wrong lobby ident for selected game profile, invalid `PORT`, invalid `U2_START_MODE`).
-
-Native UI also now enforces strict local conflict checks before launch:
-
-- blocks if UDP `9999` is already occupied
-- blocks if configured service `PORT` is already occupied (UDP/TCP)
-- blocks if another NFSLAN instance already owns the same identity (`LOBBY_IDENT` + `PORT`)
-
-Worker runtime also acquires the same identity lock, so duplicate same-profile/same-port launches are rejected even outside GUI preflight.
-
-## Notes on stopping
-
-- GUI stop terminates worker process.
-- If worker does not exit cleanly, process is force-terminated.
-
-## Relay app (`NFSLAN-Relay`)
-
-Use relay when clients/servers are on different subnets and game LAN discovery broadcast (`UDP 9999`) does not cross routing boundaries.
-
-In `NFSLAN-GUI` builds with embedded relay, open it from the `Relay tool` button (same EXE, launched with `--relay-ui`).
-
-### When to use
-
-- Cross-subnet LAN with routers/firewalls between players
-- VPN-linked sites where broadcast does not traverse as expected
-- Internet tests where you want explicit discovery forwarding behavior
-
-### Start relay
-
-1. Open `NFSLAN-Relay.exe`.
-2. Choose mode:
-   - `Transparent spoof (VPN/LAN, admin)`: forwards with original source IP (closest to legacy relay behavior).
-   - `Fixed source spoof (-e style, admin)`: forwards with manually configured source IPv4.
-   - `No spoof (compat mode, no admin)`: normal UDP forward without raw packet spoofing.
-3. Set `Listen UDP port` (default `9999`) and `Target UDP port` (default `9999`).
-4. Enter peer IPv4 addresses (one per line).
-5. If using fixed-source mode, provide `Fixed source IPv4`.
-6. Click `Start Relay`.
-
-### Beacon diff capture (in-game vs standalone)
-
-Use this when you need a precise packet-level comparison between the game-hosted server beacon and standalone launcher beacon.
-
-1. In relay UI, keep relay stopped.
-2. Click `Capture In-Game` while only in-game host server is active.
-3. Stop in-game host server.
-4. Click `Capture Standalone` while only standalone server is active.
-5. Click `Generate Diff`.
-6. Click `Save Diff` (writes `relay-beacon-diff.txt` next to the EXE) or `Copy Diff`.
-
-Capture mode binds the listen UDP port directly, so it cannot run while relay forwarding is active.
-If UDP `9999` is already occupied (for example by game search), relay now tries raw fallback sniff mode; run as Administrator for best results.
-Default capture timeout is 60 seconds.
-
-The report includes:
-- key field comparison (`ident`, `name`, `stats`, transport block)
-- changed byte ranges
-- byte-by-byte offset diff
-- full hex dump for both samples
-- heuristic diagnosis section (highlights likely client-side self-filter cases)
-
-### Notes
-
-- Spoof modes require running the app as Administrator on Windows because raw sockets + `IP_HDRINCL` are used.
-- Relay only handles discovery forwarding. Once players discover each other, game traffic still depends on normal host/client connectivity and required forwarded ports.
-- Start with `No spoof` mode for first diagnostics, then move to spoof mode if discovery still fails.
+1. Confirm you run GUI as Administrator.
+2. Confirm `server.dll` is U2.
+3. Confirm worker is listening on `PORT`.
+4. Re-run bundle and check patcher log build tag + injection target.

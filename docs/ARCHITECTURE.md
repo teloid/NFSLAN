@@ -1,53 +1,34 @@
-# Architecture
+# Architecture (U2-focused release)
 
-This fork includes AI-assisted implementation and documentation updates while preserving legacy worker runtime logic.
+## Goal
+
+Standalone U2 server host with same-PC join support through one launcher flow.
 
 ## Components
 
-- Native Win32 GUI (`native_win32`)
-  - No Qt runtime dependency
-  - Includes `server.cfg` editor in UI
-  - Starts/stops worker and streams logs
-  - Launches embedded relay UI and standalone U2 self-filter patch launcher
-- Qt GUI (`gui`)
-  - Optional cross-platform launcher path
-- U2 patch launcher (`native_win32/src/U2PatchLauncher.cpp`)
-  - Starts `speed2.exe`
-  - Applies runtime memory patch loop that clears UG2 LAN self-filter flags (`entry+0x19c`)
-  - Targets same-machine host+client visibility issue in NFSU2 client
-- Worker runtime (`NFSLAN.cpp`)
-  - Loads `server.dll`
-  - Resolves `StartServer`, `IsServerRunning`, `StopServer`
-  - Applies Most Wanted runtime patching (injector/hooking)
-  - Applies startup `server.cfg` compatibility preflight (`ENABLE_GAME_ADDR_FIXUPS`, optional same-machine `FORCE_LOCAL`)
-  - Applies profile-specific key normalization for MW vs UG2 network config keys (including `LOBBY_IDENT`/`LOBBY` defaults)
-  - Validates/selects compatible game report file (`gamefile.bin`/`gameplay.bin`) by header, not only filename
-  - Optional same-machine LAN discovery loopback bridge (`UDP 9999`) in `--same-machine` / `--local-emulation` modes
-  - UG2 sendto hook now mirrors discovery beacons for local visibility diagnostics without forcing beacon field rewrites
+- `native_win32/src/NativeMain.cpp`
+  - Main GUI (`NFSLAN-GUI.exe`)
+  - Config editing + preflight
+  - Worker lifecycle (`Start` / `Stop`)
+  - `UG2 Bundle` orchestration (worker + patcher)
 
-## Runtime models
+- `NFSLAN.cpp`
+  - Worker runtime (`--worker`)
+  - Loads `server.dll`, calls `StartServer` / `StopServer`
+  - Normalizes U2 config keys and lobby ids
+  - Performs runtime compatibility checks and logging
 
-- Windows native x64 GUI mode: `NFSLAN-GUI.exe` -> external `NFSLAN.exe` (x86) -> `server.dll`
-- Windows native single-EXE (Win32/x86): `NFSLAN-GUI.exe` -> internal `--worker` mode -> `server.dll`
-- Linux/macOS via compatibility layer: launch Windows worker through Wine/Proton/CrossOver
+- `native_win32/src/U2PatchLauncher.cpp`
+  - Runtime patch loop for `SPEED2.EXE`
+  - Keeps U2 LAN row visible on same-PC host/client scenarios
+  - Injects fallback row when LAN manager has no active row
 
-## Architecture constraints
+## Build modes
 
-- `server.dll` and worker patching are Win32/x86-oriented.
-- Native non-Windows loading of `server.dll` is not supported in this repository.
-- Embedded single-EXE mode requires Win32/x86 process architecture.
+- Embedded worker mode (recommended): one GUI EXE starts worker internally.
+- External worker mode: GUI starts `NFSLAN.exe` next to it.
 
-## Future extension points
+## Current scope boundary
 
-- Implement Underground 2 patching in worker (`PatchServerUG2`).
-- Add richer config schema and validation in native GUI.
-- Add packaged installer workflow for portable distribution.
-
-## Reverse-engineering notes currently used
-
-From decompiled `server.dll`, two config toggles are now surfaced and used in launcher flow:
-
-- `FORCE_LOCAL`
-- `ENABLE_GAME_ADDR_FIXUPS`
-
-The launcher uses these to improve same-machine host+client behavior without hardcoding binary offsets for this part.
+- Underground 2 is the active supported path in this release.
+- Most Wanted work is intentionally paused.

@@ -8,14 +8,11 @@ if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
 
     add_executable(nfslan-native-gui WIN32
         src/NativeMain.cpp
-        src/RelayMain.cpp
     )
 
     target_compile_definitions(nfslan-native-gui PRIVATE
         UNICODE
         _UNICODE
-        NFSLAN_RELAY_NO_MAIN
-        NFSLAN_NATIVE_EMBED_RELAY
     )
 
     target_link_libraries(nfslan-native-gui PRIVATE
@@ -54,25 +51,6 @@ if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
 
     set_target_properties(nfslan-native-gui PROPERTIES
         OUTPUT_NAME "${NFSLAN_NATIVE_OUTPUT_NAME}"
-    )
-endif()
-
-if(NFSLAN_BUILD_RELAY_WIN32_GUI)
-    add_executable(nfslan-relay-gui WIN32
-        src/RelayMain.cpp
-    )
-
-    target_compile_definitions(nfslan-relay-gui PRIVATE
-        UNICODE
-        _UNICODE
-    )
-
-    target_link_libraries(nfslan-relay-gui PRIVATE
-        ws2_32
-    )
-
-    set_target_properties(nfslan-relay-gui PROPERTIES
-        OUTPUT_NAME "NFSLAN-Relay"
     )
 endif()
 

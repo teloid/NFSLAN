@@ -1,4 +1,4 @@
-// NFS LAN server launcher for Most Wanted (2005) and Underground 2
+// NFS LAN server launcher (U2-focused release path)
 // by Xan/Tenjoin
 
 #include <iostream>
@@ -78,7 +78,7 @@ struct WorkerResolvedSettings
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-12-worker-clean-path-3";
+constexpr const char* kBuildTag = "2026-02-12-worker-u2-only-4";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -2596,6 +2596,13 @@ int NFSLANWorkerMain(int argc, char* argv[])
         }
 
         underground2Server = bIsUnderground2Server((uintptr_t)serverdll);
+        if (!underground2Server)
+        {
+            std::cerr
+                << "ERROR: This release is Underground 2-focused. Loaded server.dll appears to be Most Wanted.\n"
+                << "Please use a U2 server.dll (or switch to an older branch/commit for MW).\n";
+            return -1;
+        }
     }
 
     WorkerResolvedSettings resolved{};

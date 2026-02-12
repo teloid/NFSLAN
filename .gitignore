@@ -370,3 +370,11 @@ cmake_install.cmake
 compile_commands.json
 SERVER/server.dll.c
 SERVER/server.dll.h
+
+# Project-local runtime artifacts
+.DS_Store
+NFSLAN-native.ini
+relay-beacon-diff.txt
+*.pcap
+*.pcapng
+*.cap

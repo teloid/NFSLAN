@@ -4,6 +4,12 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+#ifndef WINVER
+#define WINVER _WIN32_WINNT
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
@@ -27,27 +33,19 @@
 #if defined(NFSLAN_NATIVE_EMBED_WORKER)
 int NFSLANWorkerMain(int argc, char* argv[]);
 #endif
-#if defined(NFSLAN_NATIVE_EMBED_RELAY)
-int NFSLANRelayMain(HINSTANCE instance, int showCommand);
-#endif
 
 namespace
 {
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-clean-path-4";
-constexpr int kGameProfileMostWanted = 0;
-constexpr int kGameProfileUnderground2 = 1;
+constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-u2-focused-2";
 
 enum ControlId : int
 {
-    kIdGameCombo = 1000,
-    kIdServerName,
+    kIdServerName = 1000,
     kIdServerDir,
     kIdBrowseServerDir,
-    kIdWorkerPath,
-    kIdBrowseWorker,
     kIdU2GameExe,
     kIdBrowseU2GameExe,
     kIdPort,
@@ -58,7 +56,6 @@ enum ControlId : int
     kIdStart,
     kIdStartU2SamePc,
     kIdStop,
-    kIdOpenU2Patcher,
     kIdConfigEditor,
     kIdLogView
 };
@@ -66,10 +63,8 @@ enum ControlId : int
 struct AppState
 {
     HWND window = nullptr;
-    HWND gameCombo = nullptr;
     HWND serverNameEdit = nullptr;
     HWND serverDirEdit = nullptr;
-    HWND workerPathEdit = nullptr;
     HWND u2GameExeEdit = nullptr;
     HWND portEdit = nullptr;
     HWND addrEdit = nullptr;
@@ -80,7 +75,6 @@ struct AppState
     HWND startButton = nullptr;
     HWND startU2SamePcButton = nullptr;
     HWND stopButton = nullptr;
-    HWND openU2PatcherButton = nullptr;
     HWND browseU2GameExeButton = nullptr;
 
     HANDLE processHandle = nullptr;
@@ -90,7 +84,6 @@ struct AppState
     HANDLE logReaderThread = nullptr;
 
     bool running = false;
-    int lastGameProfile = kGameProfileMostWanted;
     std::wstring exePath;
     std::wstring pendingLogLine;
 };
@@ -614,46 +607,19 @@ bool pathsLookEquivalent(const std::filesystem::path& a, const std::filesystem::
     return normalizePathForCompare(a) == normalizePathForCompare(b);
 }
 
-int currentGameProfileIndex()
+std::wstring defaultServerName()
 {
-    const LRESULT selectedIndex = SendMessageW(g_app.gameCombo, CB_GETCURSEL, 0, 0);
-    if (selectedIndex == kGameProfileUnderground2)
-    {
-        return kGameProfileUnderground2;
-    }
-
-    return kGameProfileMostWanted;
-}
-
-std::wstring gameProfileDisplayName(int profileIndex)
-{
-    if (profileIndex == kGameProfileUnderground2)
-    {
-        return L"Underground 2";
-    }
-
-    return L"Most Wanted";
-}
-
-std::wstring defaultServerNameForProfile(int profileIndex)
-{
-    (void)profileIndex;
     return L"Test Server";
 }
 
-std::wstring profileFolderName(int profileIndex)
+std::wstring profileFolderName()
 {
-    if (profileIndex == kGameProfileUnderground2)
-    {
-        return L"U2";
-    }
-
-    return L"MW";
+    return L"U2";
 }
 
-std::filesystem::path defaultServerDirectoryForProfile(int profileIndex)
+std::filesystem::path defaultServerDirectory()
 {
-    const std::filesystem::path profileDir = exeDirectory() / profileFolderName(profileIndex);
+    const std::filesystem::path profileDir = exeDirectory() / profileFolderName();
     std::error_code ec;
     if (std::filesystem::is_directory(profileDir, ec))
     {
@@ -672,19 +638,10 @@ std::wstring workerLaunchModeLabel()
 #endif
 }
 
-std::wstring relayLaunchModeLabel()
-{
-#if defined(NFSLAN_NATIVE_EMBED_RELAY)
-    return L"embedded relay UI";
-#else
-    return L"not embedded";
-#endif
-}
-
 std::wstring runtimeSummaryText()
 {
     return L"Build: " + std::wstring(kUiBuildTag) + L"  |  Worker: " + workerLaunchModeLabel()
-        + L"  |  Relay: " + relayLaunchModeLabel();
+        + L"  |  Mode: U2 standalone + same-PC bundle";
 }
 
 void refreshRuntimeSummaryLabel()
@@ -695,16 +652,13 @@ void refreshRuntimeSummaryLabel()
     }
 }
 
-bool applyProfileDefaultsForSelectedGame(bool forceServerName, bool forceServerDirectory)
+bool applyDefaultUiValues(bool forceServerName, bool forceServerDirectory)
 {
-    const int selectedProfile = currentGameProfileIndex();
-    const std::wstring oldDefaultServerName = defaultServerNameForProfile(g_app.lastGameProfile);
-    const std::wstring newDefaultServerName = defaultServerNameForProfile(selectedProfile);
+    const std::wstring oldDefaultServerName = defaultServerName();
+    const std::wstring newDefaultServerName = defaultServerName();
 
     const std::wstring currentServerName = trim(getWindowTextString(g_app.serverNameEdit));
-    const bool legacyDedicatedName =
-        equalCaseInsensitive(currentServerName, L"UG2 Dedicated Server")
-        || equalCaseInsensitive(currentServerName, L"MW Dedicated Server");
+    const bool legacyDedicatedName = equalCaseInsensitive(currentServerName, L"UG2 Dedicated Server");
     if (forceServerName
         || currentServerName.empty()
         || equalCaseInsensitive(currentServerName, oldDefaultServerName)
@@ -713,8 +667,8 @@ bool applyProfileDefaultsForSelectedGame(bool forceServerName, bool forceServerD
         setWindowTextString(g_app.serverNameEdit, newDefaultServerName);
     }
 
-    const std::filesystem::path selectedDefaultServerDir = defaultServerDirectoryForProfile(selectedProfile);
-    const std::filesystem::path previousDefaultServerDir = defaultServerDirectoryForProfile(g_app.lastGameProfile);
+    const std::filesystem::path selectedDefaultServerDir = defaultServerDirectory();
+    const std::filesystem::path previousDefaultServerDir = defaultServerDirectory();
     const std::filesystem::path currentServerDir = currentServerDirectory();
 
     bool shouldReplaceServerDirectory = forceServerDirectory;
@@ -746,8 +700,6 @@ bool applyProfileDefaultsForSelectedGame(bool forceServerName, bool forceServerD
         setWindowTextString(g_app.serverDirEdit, selectedDefaultServerDir.wstring());
         serverDirectoryChanged = true;
     }
-
-    g_app.lastGameProfile = selectedProfile;
     return serverDirectoryChanged;
 }
 
@@ -768,12 +720,11 @@ void appendUiRuntimeContext()
     }
 
     appendLogLine(L"Worker launch mode: " + workerLaunchModeLabel());
-    appendLogLine(L"Relay launch mode: " + relayLaunchModeLabel());
     const std::filesystem::path patcherPath = exeDirectory() / "NFSLAN-U2-Patcher.exe";
     appendLogLine(
         std::wstring(L"U2 patch launcher: ")
-        + (std::filesystem::exists(patcherPath) ? patcherPath.wstring() : L"<not found>"));
-    appendLogLine(L"Selected profile: " + gameProfileDisplayName(currentGameProfileIndex()));
+            + (std::filesystem::exists(patcherPath) ? patcherPath.wstring() : L"<not found>"));
+    appendLogLine(L"Profile: Underground 2 (U2-only launcher)");
     appendLogLine(L"Server directory: " + currentServerDirectory().wstring());
     appendLogLine(L"Server config: " + currentServerConfigPath().wstring());
 }
@@ -956,10 +907,8 @@ void refreshProfileSpecificControls()
         return;
     }
 
-    const bool isU2Profile = (currentGameProfileIndex() == kGameProfileUnderground2);
-    const BOOL editableWhenIdle = (!g_app.running && isU2Profile) ? TRUE : FALSE;
-    const BOOL launchWhenIdle = (!g_app.running && isU2Profile) ? TRUE : FALSE;
-    const BOOL launchAnyU2State = isU2Profile ? TRUE : FALSE;
+    const BOOL editableWhenIdle = (!g_app.running) ? TRUE : FALSE;
+    const BOOL launchWhenIdle = (!g_app.running) ? TRUE : FALSE;
 
     EnableWindow(g_app.u2StartModeEdit, editableWhenIdle);
     if (g_app.u2GameExeEdit)
@@ -973,10 +922,6 @@ void refreshProfileSpecificControls()
     if (g_app.startU2SamePcButton)
     {
         EnableWindow(g_app.startU2SamePcButton, launchWhenIdle);
-    }
-    if (g_app.openU2PatcherButton)
-    {
-        EnableWindow(g_app.openU2PatcherButton, launchAnyU2State);
     }
 }
 
@@ -1013,8 +958,7 @@ ServerDllFlavor detectServerDllFlavor(const std::filesystem::path& dllPath)
 bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std::wstring* blockingErrorOut)
 {
     const std::wstring configText = getWindowTextString(g_app.configEditor);
-    const int profile = currentGameProfileIndex();
-    const std::wstring expectedLobby = (profile == kGameProfileUnderground2) ? L"NFSU2NA" : L"NFSMWNA";
+    const std::wstring expectedLobby = L"NFSU2NA";
 
     std::vector<std::wstring> errors;
     std::vector<std::wstring> warnings;
@@ -1023,18 +967,14 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
     if (std::filesystem::exists(serverDllPath))
     {
         const ServerDllFlavor flavor = detectServerDllFlavor(serverDllPath);
-        if (profile == kGameProfileUnderground2 && flavor == ServerDllFlavor::MostWanted)
+        if (flavor == ServerDllFlavor::MostWanted)
         {
             errors.push_back(L"Selected profile is Underground 2 but server.dll looks like Most Wanted.");
-        }
-        else if (profile == kGameProfileMostWanted && flavor == ServerDllFlavor::Underground2)
-        {
-            errors.push_back(L"Selected profile is Most Wanted but server.dll looks like Underground 2.");
         }
         else if (flavor == ServerDllFlavor::Unknown)
         {
             warnings.push_back(
-                L"Could not confidently identify server.dll profile from binary markers; verify DLL matches selected game.");
+                L"Could not confidently identify server.dll profile from binary markers; ensure this is a U2 server.dll.");
         }
     }
 
@@ -1075,36 +1015,15 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
 
     int u2Mode = 0;
     const std::wstring u2ModeText = trim(getConfigValue(configText, L"U2_START_MODE"));
-    if (profile == kGameProfileUnderground2)
+    if (!tryParseIntRange(u2ModeText.empty() ? L"0" : u2ModeText, 0, 13, &u2Mode))
     {
-        if (!tryParseIntRange(u2ModeText.empty() ? L"0" : u2ModeText, 0, 13, &u2Mode))
-        {
-            errors.push_back(L"U2_START_MODE must be an integer in range 0..13 for Underground 2.");
-        }
-
-        if (!trim(getConfigValue(configText, L"CADDR")).empty()
-            || !trim(getConfigValue(configText, L"CPORT")).empty())
-        {
-            warnings.push_back(
-                L"CADDR/CPORT are MW-oriented keys; they are usually ignored for Underground 2 profile.");
-        }
+        errors.push_back(L"U2_START_MODE must be an integer in range 0..13 for Underground 2.");
     }
-    else
+
+    if (!trim(getConfigValue(configText, L"CADDR")).empty()
+        || !trim(getConfigValue(configText, L"CPORT")).empty())
     {
-        if (!u2ModeText.empty() && !equalCaseInsensitive(u2ModeText, L"0"))
-        {
-            warnings.push_back(L"U2_START_MODE is set but selected profile is MW; worker will ignore it.");
-        }
-
-        if (!trim(getConfigValue(configText, L"MADDR")).empty()
-            || !trim(getConfigValue(configText, L"RADDR")).empty()
-            || !trim(getConfigValue(configText, L"MPORT")).empty()
-            || !trim(getConfigValue(configText, L"RPORT")).empty())
-        {
-            warnings.push_back(
-                L"MADDR/RADDR/MPORT/RPORT are UG2-oriented keys; verify MW AADDR/CADDR/APORT/CPORT are correct.");
-        }
-
+        warnings.push_back(L"CADDR/CPORT are ignored in this U2-only launcher.");
     }
 
     const std::wstring gamefile = trim(getConfigValue(configText, L"GAMEFILE"));
@@ -1185,7 +1104,7 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
 
     if (errors.empty())
     {
-        appendLogLine(L"Preflight validation passed for profile " + gameProfileDisplayName(profile) + L".");
+        appendLogLine(L"Preflight validation passed for profile Underground 2.");
         return true;
     }
 
@@ -1207,7 +1126,6 @@ void setUiRunningState(bool running)
     EnableWindow(g_app.startButton, running ? FALSE : TRUE);
     EnableWindow(g_app.stopButton, running ? TRUE : FALSE);
 
-    EnableWindow(g_app.gameCombo, running ? FALSE : TRUE);
     EnableWindow(g_app.serverNameEdit, running ? FALSE : TRUE);
     EnableWindow(g_app.serverDirEdit, running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.window, kIdBrowseServerDir), running ? FALSE : TRUE);
@@ -1216,14 +1134,6 @@ void setUiRunningState(bool running)
     EnableWindow(GetDlgItem(g_app.window, kIdLoadConfig), running ? FALSE : TRUE);
     EnableWindow(GetDlgItem(g_app.window, kIdSaveConfig), running ? FALSE : TRUE);
     EnableWindow(g_app.configEditor, running ? FALSE : TRUE);
-
-#if defined(NFSLAN_NATIVE_EMBED_WORKER)
-    EnableWindow(g_app.workerPathEdit, FALSE);
-    EnableWindow(GetDlgItem(g_app.window, kIdBrowseWorker), FALSE);
-#else
-    EnableWindow(g_app.workerPathEdit, running ? FALSE : TRUE);
-    EnableWindow(GetDlgItem(g_app.window, kIdBrowseWorker), running ? FALSE : TRUE);
-#endif
 
     refreshProfileSpecificControls();
 }
@@ -1289,8 +1199,7 @@ void applyFieldsToConfigEditor()
     const std::wstring portValue = trim(getWindowTextString(g_app.portEdit));
     const std::wstring addrValue = trim(getWindowTextString(g_app.addrEdit));
     const std::wstring u2StartModeValue = trim(getWindowTextString(g_app.u2StartModeEdit));
-    const std::wstring expectedLobby =
-        (currentGameProfileIndex() == kGameProfileUnderground2) ? L"NFSU2NA" : L"NFSMWNA";
+    const std::wstring expectedLobby = L"NFSU2NA";
 
     if (!portValue.empty())
     {
@@ -1396,27 +1305,6 @@ std::wstring browseForDirectory(HWND owner)
     return result;
 }
 
-std::wstring browseForWorkerExecutable(HWND owner)
-{
-    wchar_t filePath[MAX_PATH] = {};
-
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner;
-    const wchar_t filter[] = L"Executable files (*.exe)\0*.exe\0All files\0*.*\0";
-    ofn.lpstrFilter = filter;
-    ofn.lpstrFile = filePath;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-
-    if (!GetOpenFileNameW(&ofn))
-    {
-        return L"";
-    }
-
-    return std::wstring(filePath);
-}
-
 std::wstring browseForU2GameExecutable(HWND owner)
 {
     wchar_t filePath[MAX_PATH] = {};
@@ -1438,145 +1326,6 @@ std::wstring browseForU2GameExecutable(HWND owner)
     }
 
     return std::wstring(filePath);
-}
-
-void launchRelayUi()
-{
-#if defined(NFSLAN_NATIVE_EMBED_RELAY)
-    const std::wstring commandLine = L"\"" + g_app.exePath + L"\" --relay-ui";
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-
-    std::wstring mutableCommandLine = commandLine;
-    mutableCommandLine.push_back(L'\0');
-
-    const BOOL created = CreateProcessW(
-        g_app.exePath.c_str(),
-        mutableCommandLine.data(),
-        nullptr,
-        nullptr,
-        FALSE,
-        0,
-        nullptr,
-        exeDirectory().wstring().c_str(),
-        &si,
-        &pi);
-    if (!created)
-    {
-        const DWORD errorCode = GetLastError();
-        const std::wstring errorDetails =
-            L"Failed to launch relay UI. Win32 error " + std::to_wstring(errorCode) + L": "
-            + formatWin32Error(errorCode);
-        appendLogLine(errorDetails);
-        showError(errorDetails);
-        return;
-    }
-
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    appendLogLine(L"Opened embedded relay UI window.");
-#else
-    showError(L"Relay UI is not embedded in this build.");
-#endif
-}
-
-void launchU2Patcher()
-{
-    if (currentGameProfileIndex() == kGameProfileUnderground2)
-    {
-        const std::filesystem::path gamePath = std::filesystem::path(trim(getWindowTextString(g_app.u2GameExeEdit)));
-        if (!gamePath.empty() && std::filesystem::exists(gamePath))
-        {
-            int injectPort = 9900;
-            const std::wstring portText = trim(getWindowTextString(g_app.portEdit));
-            if (!portText.empty())
-            {
-                tryParseIntRange(portText, 1, 65535, &injectPort);
-            }
-
-            std::wstring injectIp = trim(getWindowTextString(g_app.addrEdit));
-            if (injectIp.empty())
-            {
-                injectIp = L"127.0.0.1";
-            }
-
-            std::wstring detectedIp;
-            if (tryResolveRunningWorkerInjectIpForPort(injectPort, &detectedIp))
-            {
-                if (injectIp != detectedIp)
-                {
-                    appendLogLine(
-                        L"U2 patcher: overriding inject IP from "
-                        + injectIp
-                        + L" to worker listener "
-                        + detectedIp
-                        + L" on port "
-                        + std::to_wstring(injectPort)
-                        + L".");
-                }
-                injectIp = detectedIp;
-            }
-            else if (g_app.running)
-            {
-                appendLogLine(
-                    L"U2 patcher: could not resolve worker listener address on port "
-                    + std::to_wstring(injectPort)
-                    + L"; using configured IP "
-                    + injectIp
-                    + L".");
-            }
-
-            std::wstring injectName = trim(getWindowTextString(g_app.serverNameEdit));
-            if (injectName.empty())
-            {
-                injectName = defaultServerNameForProfile(currentGameProfileIndex());
-            }
-            launchU2PatcherForGame(gamePath, injectName, injectPort, injectIp);
-            return;
-        }
-    }
-
-    const std::filesystem::path patcherPath = exeDirectory() / "NFSLAN-U2-Patcher.exe";
-    if (!std::filesystem::exists(patcherPath))
-    {
-        showError(
-            L"NFSLAN-U2-Patcher.exe was not found next to this launcher.\n"
-            L"Build/install the patcher target and place it in the same folder.");
-        return;
-    }
-
-    std::wstring commandLine = L"\"" + patcherPath.wstring() + L"\"";
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-
-    commandLine.push_back(L'\0');
-    const BOOL created = CreateProcessW(
-        patcherPath.wstring().c_str(),
-        commandLine.data(),
-        nullptr,
-        nullptr,
-        FALSE,
-        0,
-        nullptr,
-        exeDirectory().wstring().c_str(),
-        &si,
-        &pi);
-    if (!created)
-    {
-        const DWORD errorCode = GetLastError();
-        const std::wstring errorDetails =
-            L"Failed to launch U2 patcher. Win32 error " + std::to_wstring(errorCode) + L": "
-            + formatWin32Error(errorCode);
-        appendLogLine(errorDetails);
-        showError(errorDetails);
-        return;
-    }
-
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    appendLogLine(L"Opened U2 self-filter patch launcher.");
 }
 
 void stopWorker()
@@ -1654,10 +1403,10 @@ bool validateStartInput(std::wstring* errorOut, bool requireServerDll = true)
     }
 
 #if !defined(NFSLAN_NATIVE_EMBED_WORKER)
-    const std::wstring workerPath = trim(getWindowTextString(g_app.workerPathEdit));
-    if (workerPath.empty() || !std::filesystem::exists(std::filesystem::path(workerPath)))
+    const std::filesystem::path workerPath = exeDirectory() / "NFSLAN.exe";
+    if (!std::filesystem::exists(workerPath))
     {
-        *errorOut = L"Worker executable path is invalid.";
+        *errorOut = L"NFSLAN.exe was not found next to NFSLAN-GUI.exe (external worker mode).";
         return false;
     }
 #endif
@@ -1766,23 +1515,20 @@ void startWorker()
         return;
     }
 
-    if (currentGameProfileIndex() == kGameProfileUnderground2)
+    const std::wstring configuredAddr = trim(getWindowTextString(g_app.addrEdit));
+    if (configuredAddr.empty() || configuredAddr == L"0.0.0.0")
     {
-        const std::wstring configuredAddr = trim(getWindowTextString(g_app.addrEdit));
-        if (configuredAddr.empty() || configuredAddr == L"0.0.0.0")
+        std::wstring lanIp;
+        if (tryGetPrimaryLanIpv4(&lanIp))
         {
-            std::wstring lanIp;
-            if (tryGetPrimaryLanIpv4(&lanIp))
-            {
-                setWindowTextString(g_app.addrEdit, lanIp);
-                appendLogLine(L"UG2 start: ADDR auto-resolved from wildcard to " + lanIp + L".");
-            }
-            else
-            {
-                appendLogLine(
-                    L"UG2 start warning: ADDR is wildcard and LAN IPv4 auto-detect failed; "
-                    L"worker will use runtime fallback for endpoint identity.");
-            }
+            setWindowTextString(g_app.addrEdit, lanIp);
+            appendLogLine(L"U2 start: ADDR auto-resolved from wildcard to " + lanIp + L".");
+        }
+        else
+        {
+            appendLogLine(
+                L"U2 start warning: ADDR is wildcard and LAN IPv4 auto-detect failed; "
+                L"worker will use runtime fallback for endpoint identity.");
         }
     }
 
@@ -1802,7 +1548,6 @@ void startWorker()
 
     const std::wstring serverName = trim(getWindowTextString(g_app.serverNameEdit));
     const std::wstring u2ModeText = trim(getWindowTextString(g_app.u2StartModeEdit));
-    const std::wstring profileName = gameProfileDisplayName(currentGameProfileIndex());
 
     std::wstring executablePath;
     std::wstring commandLine;
@@ -1811,17 +1556,17 @@ void startWorker()
     executablePath = g_app.exePath;
     commandLine = L"\"" + g_app.exePath + L"\" --worker \"" + escapeForQuotedArg(serverName) + L"\"";
 #else
-    executablePath = trim(getWindowTextString(g_app.workerPathEdit));
+    executablePath = (exeDirectory() / "NFSLAN.exe").wstring();
     commandLine = L"\"" + executablePath + L"\" \"" + escapeForQuotedArg(serverName) + L"\"";
 #endif
 
-    if (currentGameProfileIndex() == kGameProfileUnderground2 && !u2ModeText.empty())
+    if (!u2ModeText.empty())
     {
         commandLine += L" --u2-mode " + u2ModeText;
     }
 
     appendLogLine(L"UI build tag: " + std::wstring(kUiBuildTag));
-    appendLogLine(L"Profile: " + profileName);
+    appendLogLine(L"Profile: Underground 2");
     appendLogLine(L"Worker launch mode: " + workerLaunchModeLabel());
     appendLogLine(L"Server directory: " + serverDir.wstring());
     appendLogLine(L"Server config: " + currentServerConfigPath().wstring());
@@ -1896,12 +1641,6 @@ void startWorker()
 
 void startU2SamePcBundle()
 {
-    if (currentGameProfileIndex() != kGameProfileUnderground2)
-    {
-        showError(L"UG2 bundle is available only for Underground 2 profile.");
-        return;
-    }
-
     std::filesystem::path gameExePath = std::filesystem::path(trim(getWindowTextString(g_app.u2GameExeEdit)));
     if (gameExePath.empty() || !std::filesystem::exists(gameExePath))
     {
@@ -1996,7 +1735,7 @@ void startU2SamePcBundle()
     std::wstring injectName = trim(getWindowTextString(g_app.serverNameEdit));
     if (injectName.empty())
     {
-        injectName = defaultServerNameForProfile(currentGameProfileIndex());
+        injectName = defaultServerName();
     }
 
     if (!launchU2PatcherForGame(gameExePath, injectName, injectPort, injectIp))
@@ -2012,17 +1751,12 @@ void saveSettings()
 {
     const std::wstring path = settingsPath().wstring();
 
-    WritePrivateProfileStringW(L"launcher", L"gameIndex", std::to_wstring(SendMessageW(g_app.gameCombo, CB_GETCURSEL, 0, 0)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"serverName", trim(getWindowTextString(g_app.serverNameEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"serverDir", trim(getWindowTextString(g_app.serverDirEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"u2GameExe", trim(getWindowTextString(g_app.u2GameExeEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"port", trim(getWindowTextString(g_app.portEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"addr", trim(getWindowTextString(g_app.addrEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"u2StartMode", trim(getWindowTextString(g_app.u2StartModeEdit)).c_str(), path.c_str());
-
-#if !defined(NFSLAN_NATIVE_EMBED_WORKER)
-    WritePrivateProfileStringW(L"launcher", L"workerPath", trim(getWindowTextString(g_app.workerPathEdit)).c_str(), path.c_str());
-#endif
 }
 
 std::wstring readIniValue(const std::wstring& key, const std::wstring& fallback)
@@ -2034,12 +1768,6 @@ std::wstring readIniValue(const std::wstring& key, const std::wstring& fallback)
 
 void loadSettings()
 {
-    const int gameIndex = _wtoi(readIniValue(L"gameIndex", L"0").c_str());
-    const int normalizedGameIndex =
-        (gameIndex == kGameProfileUnderground2) ? kGameProfileUnderground2 : kGameProfileMostWanted;
-    SendMessageW(g_app.gameCombo, CB_SETCURSEL, normalizedGameIndex, 0);
-    g_app.lastGameProfile = normalizedGameIndex;
-
     setWindowTextString(g_app.serverNameEdit, readIniValue(L"serverName", getWindowTextString(g_app.serverNameEdit)));
     setWindowTextString(g_app.serverDirEdit, readIniValue(L"serverDir", getWindowTextString(g_app.serverDirEdit)));
     setWindowTextString(g_app.u2GameExeEdit, readIniValue(L"u2GameExe", getWindowTextString(g_app.u2GameExeEdit)));
@@ -2047,36 +1775,10 @@ void loadSettings()
     setWindowTextString(g_app.addrEdit, readIniValue(L"addr", L"0.0.0.0"));
     setWindowTextString(g_app.u2StartModeEdit, readIniValue(L"u2StartMode", L"0"));
 
-#if !defined(NFSLAN_NATIVE_EMBED_WORKER)
-    setWindowTextString(g_app.workerPathEdit, readIniValue(L"workerPath", getWindowTextString(g_app.workerPathEdit)));
-#endif
-
-    const bool changedDir = applyProfileDefaultsForSelectedGame(false, false);
+    const bool changedDir = applyDefaultUiValues(false, false);
     if (changedDir)
     {
         appendLogLine(L"Profile default server directory applied: " + currentServerDirectory().wstring());
-    }
-
-    refreshProfileSpecificControls();
-    refreshRuntimeSummaryLabel();
-}
-
-void updateDefaultsForCurrentGame(bool logChanges)
-{
-    const int selectedProfile = currentGameProfileIndex();
-    const bool changedDir = applyProfileDefaultsForSelectedGame(false, false);
-    if (changedDir)
-    {
-        loadServerConfig(false);
-    }
-
-    if (logChanges)
-    {
-        appendLogLine(L"Selected profile: " + gameProfileDisplayName(selectedProfile));
-        if (changedDir)
-        {
-            appendLogLine(L"Server directory switched to profile default: " + currentServerDirectory().wstring());
-        }
     }
 
     refreshProfileSpecificControls();
@@ -2097,42 +1799,53 @@ void createUi(HWND window)
 {
     g_app.window = window;
 
-    constexpr int left = 12;
-    constexpr int labelWidth = 130;
-    constexpr int fieldWidth = 560;
+    constexpr int left = 14;
+    constexpr int labelWidth = 132;
+    constexpr int fieldWidth = 610;
     constexpr int smallFieldWidth = 130;
-    constexpr int buttonWidth = 90;
+    constexpr int buttonWidth = 110;
     constexpr int rowHeight = 24;
-    constexpr int rowGap = 8;
+    constexpr int rowGap = 9;
 
     int y = 12;
 
-    createLabel(window, L"Game profile", left, y + 4, labelWidth, rowHeight);
-    g_app.gameCombo = CreateWindowExW(
+    HWND title = CreateWindowExW(
         0,
-        L"COMBOBOX",
-        nullptr,
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-        left + labelWidth,
+        L"STATIC",
+        L"NFSLAN U2 Server Bundle",
+        WS_CHILD | WS_VISIBLE,
+        left,
         y,
-        260,
-        240,
+        420,
+        26,
         window,
-        reinterpret_cast<HMENU>(kIdGameCombo),
+        nullptr,
         nullptr,
         nullptr);
-    applyDefaultFontToWindow(g_app.gameCombo);
-    SendMessageW(g_app.gameCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Need for Speed Most Wanted (2005)"));
-    SendMessageW(g_app.gameCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Need for Speed Underground 2"));
-    SendMessageW(g_app.gameCombo, CB_SETCURSEL, 0, 0);
+    applyDefaultFontToWindow(title);
 
-    y += rowHeight + rowGap;
+    HWND subtitle = CreateWindowExW(
+        0,
+        L"STATIC",
+        L"Run as Administrator. Fill server name, choose SPEED2.EXE, press UG2 Bundle.",
+        WS_CHILD | WS_VISIBLE,
+        left,
+        y + 24,
+        860,
+        18,
+        window,
+        nullptr,
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(subtitle);
+
+    y += 48;
 
     createLabel(window, L"Server name", left, y + 4, labelWidth, rowHeight);
     g_app.serverNameEdit = CreateWindowExW(
         WS_EX_CLIENTEDGE,
         L"EDIT",
-        defaultServerNameForProfile(kGameProfileMostWanted).c_str(),
+        defaultServerName().c_str(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
         left + labelWidth,
         y,
@@ -2150,7 +1863,7 @@ void createUi(HWND window)
     g_app.serverDirEdit = CreateWindowExW(
         WS_EX_CLIENTEDGE,
         L"EDIT",
-        defaultServerDirectoryForProfile(kGameProfileMostWanted).wstring().c_str(),
+        defaultServerDirectory().wstring().c_str(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
         left + labelWidth,
         y,
@@ -2176,61 +1889,6 @@ void createUi(HWND window)
         nullptr,
         nullptr);
     applyDefaultFontToWindow(browseServerDirButton);
-
-    y += rowHeight + rowGap;
-
-    createLabel(window, L"Worker executable", left, y + 4, labelWidth, rowHeight);
-
-#if defined(NFSLAN_NATIVE_EMBED_WORKER)
-    g_app.workerPathEdit = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
-        L"EDIT",
-        L"(embedded in this executable)",
-        WS_CHILD | WS_VISIBLE,
-        left + labelWidth,
-        y,
-        fieldWidth - buttonWidth - 8,
-        rowHeight,
-        window,
-        reinterpret_cast<HMENU>(kIdWorkerPath),
-        nullptr,
-        nullptr);
-#else
-    g_app.workerPathEdit = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
-        L"EDIT",
-        (exeDirectory() / "NFSLAN.exe").wstring().c_str(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-        left + labelWidth,
-        y,
-        fieldWidth - buttonWidth - 8,
-        rowHeight,
-        window,
-        reinterpret_cast<HMENU>(kIdWorkerPath),
-        nullptr,
-        nullptr);
-#endif
-    applyDefaultFontToWindow(g_app.workerPathEdit);
-
-    HWND browseWorkerButton = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"Browse...",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        left + labelWidth + fieldWidth - buttonWidth,
-        y,
-        buttonWidth,
-        rowHeight,
-        window,
-        reinterpret_cast<HMENU>(kIdBrowseWorker),
-        nullptr,
-        nullptr);
-    applyDefaultFontToWindow(browseWorkerButton);
-
-#if defined(NFSLAN_NATIVE_EMBED_WORKER)
-    EnableWindow(g_app.workerPathEdit, FALSE);
-    EnableWindow(browseWorkerButton, FALSE);
-#endif
 
     y += rowHeight + rowGap;
 
@@ -2274,7 +1932,7 @@ void createUi(HWND window)
         WS_CHILD | WS_VISIBLE,
         left,
         y + 4,
-        960,
+        980,
         rowHeight,
         window,
         nullptr,
@@ -2371,8 +2029,6 @@ void createUi(HWND window)
     const int startButtonX = left + 2 * (buttonWidth + 8);
     const int stopButtonX = startButtonX + buttonWidth + 8;
     const int samePcButtonX = stopButtonX + buttonWidth + 8;
-    const int patcherButtonX = samePcButtonX + (buttonWidth + 40) + 8;
-
     g_app.startButton = CreateWindowExW(
         0,
         L"BUTTON",
@@ -2406,32 +2062,17 @@ void createUi(HWND window)
     g_app.startU2SamePcButton = CreateWindowExW(
         0,
         L"BUTTON",
-        L"UG2 Bundle",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        L"UG2 Bundle (Recommended)",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
         samePcButtonX,
         y,
-        buttonWidth + 40,
+        buttonWidth + 90,
         rowHeight,
         window,
         reinterpret_cast<HMENU>(kIdStartU2SamePc),
         nullptr,
         nullptr);
     applyDefaultFontToWindow(g_app.startU2SamePcButton);
-
-    g_app.openU2PatcherButton = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"U2 patcher",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        patcherButtonX,
-        y,
-        buttonWidth + 30,
-        rowHeight,
-        window,
-        reinterpret_cast<HMENU>(kIdOpenU2Patcher),
-        nullptr,
-        nullptr);
-    applyDefaultFontToWindow(g_app.openU2PatcherButton);
 
     y += rowHeight + rowGap;
 
@@ -2445,7 +2086,7 @@ void createUi(HWND window)
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
         left,
         y,
-        960,
+        980,
         220,
         window,
         reinterpret_cast<HMENU>(kIdConfigEditor),
@@ -2465,8 +2106,8 @@ void createUi(HWND window)
         WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         left,
         y,
-        960,
-        250,
+        980,
+        265,
         window,
         reinterpret_cast<HMENU>(kIdLogView),
         nullptr,
@@ -2483,13 +2124,6 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
 
     switch (controlId)
     {
-    case kIdGameCombo:
-        if (commandCode == CBN_SELCHANGE)
-        {
-            updateDefaultsForCurrentGame(true);
-        }
-        return 0;
-
     case kIdU2StartMode:
         if (commandCode == EN_KILLFOCUS)
         {
@@ -2514,20 +2148,6 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
         }
         return 0;
     }
-
-    case kIdBrowseWorker:
-#if !defined(NFSLAN_NATIVE_EMBED_WORKER)
-    {
-        const std::wstring selected = browseForWorkerExecutable(window);
-        if (!selected.empty())
-        {
-            setWindowTextString(g_app.workerPathEdit, selected);
-        }
-        return 0;
-    }
-#else
-        return 0;
-#endif
 
     case kIdBrowseU2GameExe:
     {
@@ -2560,10 +2180,6 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
 
     case kIdStop:
         stopWorker();
-        return 0;
-
-    case kIdOpenU2Patcher:
-        launchU2Patcher();
         return 0;
 
     default:
@@ -2678,24 +2294,6 @@ bool shouldRunWorkerMode()
 #endif
 }
 
-bool shouldRunRelayMode()
-{
-#if defined(NFSLAN_NATIVE_EMBED_RELAY)
-    int argcW = 0;
-    LPWSTR* argvW = CommandLineToArgvW(GetCommandLineW(), &argcW);
-    if (!argvW)
-    {
-        return false;
-    }
-
-    const bool relayMode = (argcW > 1 && wcscmp(argvW[1], L"--relay-ui") == 0);
-    LocalFree(argvW);
-    return relayMode;
-#else
-    return false;
-#endif
-}
-
 } // namespace
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
@@ -2703,13 +2301,6 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
     wchar_t executablePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
     g_app.exePath = executablePath;
-
-#if defined(NFSLAN_NATIVE_EMBED_RELAY)
-    if (shouldRunRelayMode())
-    {
-        return NFSLANRelayMain(instance, showCommand);
-    }
-#endif
 
 #if defined(NFSLAN_NATIVE_EMBED_WORKER)
     if (shouldRunWorkerMode())
@@ -2732,9 +2323,9 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
 
     std::wstring windowTitle;
 #if defined(NFSLAN_NATIVE_EMBED_WORKER)
-    windowTitle = L"NFSLAN Native Server Manager (Embedded Worker) [" + std::wstring(kUiBuildTag) + L"]";
+    windowTitle = L"NFSLAN U2 Bundle Manager (Embedded Worker) [" + std::wstring(kUiBuildTag) + L"]";
 #else
-    windowTitle = L"NFSLAN Native Server Manager [" + std::wstring(kUiBuildTag) + L"]";
+    windowTitle = L"NFSLAN U2 Bundle Manager [" + std::wstring(kUiBuildTag) + L"]";
 #endif
 
     HWND window = CreateWindowExW(
@@ -2744,8 +2335,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
+        1040,
         1000,
-        960,
         nullptr,
         nullptr,
         instance,

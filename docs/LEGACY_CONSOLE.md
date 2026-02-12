@@ -1,44 +1,21 @@
-# Legacy Console Worker Notes
+# Console Worker Notes
 
-The original project behavior is preserved in the Windows worker executable (`NFSLAN.exe`).
+`NFSLAN.exe` can still be used directly.
 
-## Basic usage
-
-```bash
-NFSLAN YourServerName
-```
-
-Optional:
+## Basic
 
 ```bash
-NFSLAN YourServerName -n
+NFSLAN "Test Server"
 ```
 
-`-n` disables runtime patching.
-
-Same-machine helper mode:
+With explicit U2 mode:
 
 ```bash
-NFSLAN YourServerName --same-machine
+NFSLAN "Test Server" --u2-mode 0
 ```
 
-`--same-machine` (alias `--local-host`) forces `FORCE_LOCAL=1` and `ENABLE_GAME_ADDR_FIXUPS=1` in `server.cfg` before launch.
+## Notes
 
-## Required files
-
-Place next to worker executable or set worker working directory to contain:
-
-- `server.dll`
-- `server.cfg`
-
-Use the correct game-specific `server.dll` (MW and UG2 are different).
-
-## Existing config notes
-
-- `PORT` sets listening port (commonly `9900`)
-- `ADDR` affects advertised listen address
-- `FORCE_LOCAL` helps host+client on the same machine
-- `ENABLE_GAME_ADDR_FIXUPS` is recommended for local/public address correction paths
-- Logging keys like `LOGCONNECTIONS`, `log.level`, `log.categoryMask` can adjust diagnostics
-
-Some `server.cfg` keys remain reverse-engineering dependent and are still not fully documented.
+- `-n` is deprecated in this fork path and ignored in worker flow.
+- Worker expects `server.dll` + `server.cfg` in working directory.
+- For this release, use U2 `server.dll`.

@@ -1,73 +1,76 @@
-# NFSLAN Server Manager
+# NFSLAN U2 Bundle
 
-Cross-platform GUI launcher for NFS LAN server hosting with a Windows native worker runtime.
+Standalone Need for Speed Underground 2 LAN server launcher for Windows, with same-PC join support.
 
-## AI-Enhanced Fork Notice
+## AI-enhanced release note
 
-This fork includes AI-enhanced implementation and documentation updates for architecture, GUI workflow, build system, and diagnostics.
-Legacy worker behavior and reverse-engineered server limitations still apply.
+This repository version is AI-enhanced and focused on one goal:
 
-## What is included
+`Run U2 server outside the game, and still join from the same PC.`
 
-- Native Win32 launcher (`NFSLAN-GUI`) with integrated `server.cfg` editor and embedded relay tool launcher (`Relay tool` button) in the same EXE
-- Native Win32 U2 patch launcher (`NFSLAN-U2-Patcher`) to bypass NFSU2 same-machine self-discovery filtering in `speed2.exe`
-- Native Win32 relay app (`NFSLAN-Relay`) for cross-subnet/cross-site LAN discovery forwarding (UG2/MW style UDP `9999` broadcast relay)
-- Native Win32 relay app includes beacon capture/diff workflow (in-game sample vs standalone sample) with detailed report export
-- Relay capture path includes UDP bind + raw fallback sniff mode when `9999` is already occupied (admin recommended)
-- Native Win32 launcher includes explicit `FORCE_LOCAL`, `LOCAL_EMULATION`, and `ENABLE_GAME_ADDR_FIXUPS` toggles for same-machine host+client scenarios
-- Native Win32 launcher includes `UG2 Same-PC` one-click bundle (start worker + launch patcher with synchronized name/port/IP injection)
-- Native Win32 launcher includes `Beacon only` button for UG2 discovery-only visibility testing
-- Native Win32 launcher includes `U2_START_MODE` (`0..13`) and `LAN_DIAG` controls with profile-aware preflight validation before launch
-- Native Win32 launcher preflight now blocks local port conflicts (`UDP 9999`, service UDP/TCP `PORT`) and duplicate server identity (`LOBBY_IDENT` + `PORT`)
-- Native Win32 launcher logs build tag, executable path, worker launch mode, and effective profile/runtime paths at startup
-- Qt launcher (`NFSLAN-GUI`/`NFSLAN-NativeGUI` depending on build options) for cross-platform workflows
-- Windows single-executable mode: GUI + worker runtime embedded in the same EXE (Win32/x86 build)
-- Optional separate `NFSLAN` worker build on Windows in external-worker mode
-- Existing injector/hooking code used by the worker for Most Wanted patching
-- Worker-side MW/UG2 config normalization and game-report file header validation (`gamefile.bin` / `gameplay.bin`)
-- Worker now auto-fills missing `LOBBY_IDENT`/`LOBBY` defaults (`NFSU2NA` for UG2, `NFSMWNA` for MW) and can run a same-machine LAN discovery loopback bridge on UDP `9999`
-- Worker supports `LOCAL_EMULATION`/`--local-emulation` with configurable discovery probe endpoint (`DISCOVERY_ADDR`/`DISCOVERY_PORT`)
-- Worker supports `--u2-mode` and `--diag-lan` for UG2 mode control and deep LAN packet diagnostics
-- Worker now supports UG2 synthetic beacon fallback (`UG2_BEACON_EMULATION=1`, `--ug2-beacon-emu`) and beacon-only discovery mode (`--beacon-only`)
-- Worker enforces the same server identity lock; UG2 beacon handling now stays close to stock server behavior (mirror/diagnostics without forced beacon rewrites)
+## Scope of this release
 
-## Important platform reality
+- U2-first launcher flow (native Win32 UI).
+- UG2 Bundle mode: starts worker + launches U2 patcher together.
+- Manual `Start` / `Stop` kept for direct worker control.
+- Simplified UI and docs for fast setup.
 
-`server.dll` from Need for Speed Most Wanted (2005) and Underground 2 is a Windows PE library.
+Most Wanted paths are intentionally de-prioritized in this release.
 
-- Windows:
-  - Native Win32 GUI can run in external-worker mode (x64 GUI + x86 worker)
-  - Single-EXE mode requires 32-bit (Win32/x86) build because worker + `server.dll` are x86-only
-- Linux/macOS: run the same Windows worker through a runtime command (`wine`, or a Proton/wrapper command)
+## Quick start (recommended)
 
-Native Linux loading of this `server.dll` is not available in this project because the game server binary itself is Windows-only.
+1. Run `NFSLAN-GUI.exe` as Administrator.
+2. Enter server name.
+3. Pick `SPEED2.EXE` in `U2 game EXE`.
+4. Press `UG2 Bundle (Recommended)`.
 
-## Quick start
+That is the primary workflow.
 
-1. Build on Windows:
-   - native Win32 GUI in x64 (external worker mode), or
-   - native single EXE in Win32/x86 (embedded worker mode).
-   - optional relay app (`NFSLAN-Relay`) for LAN discovery forwarding across subnets/VPN/internet.
-2. Place game `server.dll` and `server.cfg` in a server folder.
-3. Open `NFSLAN-GUI`, choose game profile, set server name/path, and start.
-4. If needed for cross-subnet discovery, click `Relay tool` in the same app to open embedded `NFSLAN-Relay` mode (`--relay-ui`).
-5. If host and client run on the same PC (UG2), use `UG2 Same-PC` button in native UI (it enforces local flags, starts worker, and launches patcher with matching injected endpoint).
-6. If server still does not appear in UG2 list, enable synthetic beacon fallback:
-   - normal mode: set `UG2_BEACON_EMULATION=1` or pass `--ug2-beacon-emu`
-   - discovery-only test: run worker with `--beacon-only` to broadcast a visible LAN beacon without loading `server.dll`
-6. On Linux/macOS, install a Windows compatibility runtime and run the Windows build via Proton/Wine, or use the Qt launcher path.
+## Manual mode (fallback)
+
+- Press `Start` to run only the standalone worker.
+- Press `Stop` to stop it.
+
+Use this if you want server-only runtime without launching the game patcher.
+
+## Required files
+
+In your selected server directory:
+
+- `server.dll` (Underground 2 server DLL)
+- `server.cfg`
+- optional but recommended: valid game report file (`gamefile.bin` or compatible `gameplay.bin`)
+
+## Build (Windows 11)
+
+Use Visual Studio 2022 + CMake.
+
+Single EXE (recommended, Win32/x86):
+
+```powershell
+cmake -S . -B build-win32-single -G "Visual Studio 17 2022" -A Win32 `
+  -DNFSLAN_BUILD_NATIVE_WIN32_GUI=ON `
+  -DNFSLAN_BUILD_GUI=OFF `
+  -DNFSLAN_BUILD_WORKER=ON `
+  -DNFSLAN_EMBED_WORKER_IN_GUI=ON
+cmake --build build-win32-single --config Release
+```
+
+Outputs:
+
+- `build-win32-single/native_win32/Release/NFSLAN-GUI.exe`
+- `build-win32-single/native_win32/Release/NFSLAN-U2-Patcher.exe`
+
+## Internet/LAN notes
+
+- Server listens on your configured `PORT` (default `9900`).
+- Set `ADDR` to your reachable host IP for your target setup.
+- If hosting over internet, forward required ports to the server machine.
+- Same-PC join uses bundle patching path; run as admin.
 
 ## Documentation
 
-- Build instructions: `docs/BUILD.md`
-- Runtime usage: `docs/RUNNING.md`
-- Client and internet setup: `docs/CLIENT_SETUP.md`
-- Architecture notes: `docs/ARCHITECTURE.md`
-- U2 patch launcher guide: `docs/U2_PATCHER.md`
-- Legacy worker notes: `docs/LEGACY_CONSOLE.md`
-
-## Current limitations
-
-- Underground 2 patching is still not implemented in the worker (`PatchServerUG2` is a stub).
-- You still need original game server files (`server.dll`, `server.cfg`).
-- Non-Windows runtime depends on a Windows compatibility layer because of the Windows server binary.
+- `docs/BUILD.md` - build matrix and commands
+- `docs/RUNNING.md` - runtime usage and GUI flow
+- `docs/CLIENT_SETUP.md` - client/network setup notes
+- `docs/U2_PATCHER.md` - patcher behavior and diagnostics
