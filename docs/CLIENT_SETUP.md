@@ -1,6 +1,6 @@
-# Client and Network Setup (U2)
+# Client and Network Setup (U2 + MW)
 
-This release is focused on Underground 2 standalone server + same-PC join support.
+This release is focused on standalone server + same-PC join support for U2 and MW.
 
 ## Minimum server config
 
@@ -8,13 +8,13 @@ In `server.cfg` (launcher also normalizes these):
 
 - `PORT=9900` (or your chosen port)
 - `ADDR=<host ip>`
-- `LOBBY_IDENT=NFSU2NA`
-- `LOBBY=NFSU2NA`
-- `U2_START_MODE=0`
+- `LOBBY_IDENT=<mode protocol id>` (`NFSU2NA` for U2, `NFSMWNA` for MW)
+- `LOBBY=<mode protocol id>` (`NFSU2NA` for U2, `NFSMWNA` for MW)
+- `U2_START_MODE=0` (U2 only)
 
 ## Same-PC host + client
 
-Use `UG2 Bundle (Recommended)` from GUI.
+Use `Start Bundle (Recommended)` from GUI.
 
 This is the intended path for:
 
@@ -42,7 +42,7 @@ If join fails:
 ## Verify normal LAN clients
 
 1. Start server host on PC-A with `ADDR=<PC-A LAN IPv4>` and `PORT=9900`.
-2. On PC-B (same subnet), open U2 LAN browser and locate the server row.
+2. On PC-B (same subnet), open the LAN browser in the same game and locate the server row.
 3. Join from PC-B and confirm on host:
    - `netstat -ano | findstr :9900` shows established client sessions
    - GUI `Live events` shows connection/lifecycle entries

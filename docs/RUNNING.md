@@ -1,17 +1,17 @@
-# Runtime Guide (U2-focused)
+# Runtime Guide (U2 + MW)
 
 ## Intended flow
 
 1. Run `NFSLAN-GUI.exe` as Administrator.
-2. Set `Server name`.
-3. Set `Server directory` (must contain `server.dll` + `server.cfg`).
-4. Set `U2 game EXE` (`SPEED2.EXE`).
-5. Click `UG2 Bundle (Recommended)`.
+2. Select `Mode` (Underground 2 or Most Wanted).
+3. Set `Server name`.
+4. Set `Game folder` (must contain game EXE + `server.dll` + `server.cfg`).
+5. Click `Start Bundle (Recommended)`.
 
 This launches:
 
 - standalone worker server process
-- U2 patcher for same-PC server visibility/join
+- game patcher for same-PC server visibility/join (U2 or MW)
 - live UI panes:
   - `Live events` (connection/race/lifecycle extraction)
   - `Raw logs` (full worker stream with repetitive game-report noise filtered)
@@ -27,15 +27,15 @@ Use this when you want server runtime without game patch launcher.
 
 - `PORT`: server port (`9900` default)
 - `ADDR`: server bind/identity address
-- `U2_START_MODE`: `0..13` (`0` default)
-- `LOBBY_IDENT`: must be `NFSU2NA`
-- `LOBBY`: must be `NFSU2NA`
+- `U2_START_MODE`: `0..13` (`0` default, UG2 only)
+- `LOBBY_IDENT`: must match protocol ID for selected game
+- `LOBBY`: must match protocol ID for selected game
 
-The launcher enforces U2 protocol IDs and writes compatibility values before start.
+The launcher enforces protocol IDs and writes compatibility values before start.
 
-## Required files in server directory
+## Required files in game folder
 
-- `server.dll` (U2)
+- `server.dll`
 - `server.cfg`
 
 ## Common startup checks
@@ -44,7 +44,7 @@ Preflight blocks launch when:
 
 - `PORT` is invalid.
 - `ADDR` is empty.
-- `server.dll` looks like MW profile.
+- `server.dll` looks like the wrong profile for the selected mode.
 - local ports are already occupied (`UDP 9999`, service `PORT`).
 - same identity already running (`LOBBY_IDENT + PORT`).
 
@@ -55,6 +55,6 @@ Bundle mode is the supported way for same-machine host+client.
 If discovery still fails:
 
 1. Confirm you run GUI as Administrator.
-2. Confirm `server.dll` is U2.
+2. Confirm `server.dll` matches your selected mode.
 3. Confirm worker is listening on `PORT`.
 4. Re-run bundle and check patcher log build tag + injection target.

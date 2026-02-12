@@ -2476,13 +2476,6 @@ int NFSLANWorkerMain(int argc, char* argv[])
         }
 
         underground2Server = bIsUnderground2Server((uintptr_t)serverdll);
-        if (!underground2Server)
-        {
-            std::cerr
-                << "ERROR: This release is Underground 2-focused. Loaded server.dll appears to be Most Wanted.\n"
-                << "Please use a U2 server.dll (or switch to an older branch/commit for MW).\n";
-            return -1;
-        }
     }
 
     WorkerResolvedSettings resolved{};

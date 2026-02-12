@@ -370,11 +370,15 @@ cmake_install.cmake
 compile_commands.json
 SERVER/
 SPEEDEXE/
+SPEEDEXEMV/
 
 # Project-local runtime artifacts
 .DS_Store
+.DS_Store*
 NFSLAN-native.ini
 relay-beacon-diff.txt
 *.pcap
 *.pcapng
 *.cap
+.DS_Store
+.DS_Store

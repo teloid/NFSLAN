@@ -20,6 +20,7 @@ Outputs:
 
 - `build-win32-single/native_win32/Release/NFSLAN-GUI.exe`
 - `build-win32-single/native_win32/Release/NFSLAN-U2-Patcher.exe`
+- `build-win32-single/native_win32/Release/NFSLAN-MW-Patcher.exe`
 
 ## External-worker mode (optional)
 

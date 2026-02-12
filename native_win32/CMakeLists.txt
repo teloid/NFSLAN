@@ -74,4 +74,21 @@ if(WIN32)
     set_target_properties(nfslan-u2-patcher PROPERTIES
         OUTPUT_NAME "NFSLAN-U2-Patcher"
     )
+
+    add_executable(nfslan-mw-patcher
+        src/MWPatchLauncher.cpp
+    )
+
+    target_compile_definitions(nfslan-mw-patcher PRIVATE
+        UNICODE
+        _UNICODE
+    )
+
+    target_link_libraries(nfslan-mw-patcher PRIVATE
+        comdlg32
+    )
+
+    set_target_properties(nfslan-mw-patcher PROPERTIES
+        OUTPUT_NAME "NFSLAN-MW-Patcher"
+    )
 endif()
