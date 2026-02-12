@@ -78,7 +78,7 @@ struct WorkerResolvedSettings
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-12-worker-clean-path-1";
+constexpr const char* kBuildTag = "2026-02-12-worker-clean-path-2";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -1837,6 +1837,30 @@ bool ApplyServerConfigCompatibility(
 
     const std::string portValue = EnsureConfigValue(&configText, "PORT", "9900", &changed);
     std::string addrValue = EnsureConfigValue(&configText, "ADDR", "0.0.0.0", &changed);
+    std::string ug2EndpointAddrValue = addrValue;
+
+    if (underground2Server)
+    {
+        const std::string trimmedAddr = TrimAscii(addrValue);
+        const bool wildcardAddr = trimmedAddr.empty() || EqualsIgnoreCase(trimmedAddr, "0.0.0.0");
+        const bool bindExpressionAddr = trimmedAddr.find("%%bind(") != std::string::npos;
+        if (wildcardAddr || bindExpressionAddr)
+        {
+            const auto detectedLan = DetectPreferredLocalLanIpv4();
+            if (detectedLan.has_value())
+            {
+                ug2EndpointAddrValue = *detectedLan;
+                std::cout << "NFSLAN: UG2 endpoint identity resolved to LAN IPv4 " << ug2EndpointAddrValue
+                          << " (ADDR='" << trimmedAddr << "').\n";
+            }
+            else if (wildcardAddr)
+            {
+                ug2EndpointAddrValue = "127.0.0.1";
+                std::cout << "NFSLAN: WARNING - could not auto-detect LAN IPv4 for UG2 endpoint identity; "
+                             "falling back to 127.0.0.1.\n";
+            }
+        }
+    }
 
     if (resolved.sameMachineMode)
     {
@@ -1935,13 +1959,13 @@ bool ApplyServerConfigCompatibility(
 
     if (underground2Server)
     {
-        ForceConfigValue(&configText, "MADDR", addrValue, &changed);
-        ForceConfigValue(&configText, "RADDR", addrValue, &changed);
-        ForceConfigValue(&configText, "AADDR", addrValue, &changed);
+        ForceConfigValue(&configText, "MADDR", ug2EndpointAddrValue, &changed);
+        ForceConfigValue(&configText, "RADDR", ug2EndpointAddrValue, &changed);
+        ForceConfigValue(&configText, "AADDR", ug2EndpointAddrValue, &changed);
         ForceConfigValue(&configText, "MPORT", portValue, &changed);
         ForceConfigValue(&configText, "RPORT", portValue, &changed);
         ForceConfigValue(&configText, "APORT", portValue, &changed);
-        std::cout << "NFSLAN: UG2 endpoints aligned with ADDR/PORT.\n";
+        std::cout << "NFSLAN: UG2 endpoints aligned with resolved endpoint identity and PORT.\n";
     }
 
     if (underground2Server)
@@ -1952,7 +1976,7 @@ bool ApplyServerConfigCompatibility(
         }
         for (const std::string& key : { std::string("MADDR"), std::string("RADDR"), std::string("AADDR") })
         {
-            EnsureMirroredKey(&configText, key, addrValue, &changed);
+            EnsureMirroredKey(&configText, key, ug2EndpointAddrValue, &changed);
         }
     }
     else

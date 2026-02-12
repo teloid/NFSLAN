@@ -36,7 +36,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-clean-path-3";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-clean-path-4";
 constexpr int kGameProfileMostWanted = 0;
 constexpr int kGameProfileUnderground2 = 1;
 
@@ -1717,6 +1717,26 @@ void startWorker()
         return;
     }
 
+    if (currentGameProfileIndex() == kGameProfileUnderground2)
+    {
+        const std::wstring configuredAddr = trim(getWindowTextString(g_app.addrEdit));
+        if (configuredAddr.empty() || configuredAddr == L"0.0.0.0")
+        {
+            std::wstring lanIp;
+            if (tryGetPrimaryLanIpv4(&lanIp))
+            {
+                setWindowTextString(g_app.addrEdit, lanIp);
+                appendLogLine(L"UG2 start: ADDR auto-resolved from wildcard to " + lanIp + L".");
+            }
+            else
+            {
+                appendLogLine(
+                    L"UG2 start warning: ADDR is wildcard and LAN IPv4 auto-detect failed; "
+                    L"worker will use runtime fallback for endpoint identity.");
+            }
+        }
+    }
+
     applyFieldsToConfigEditor();
 
     const std::filesystem::path serverDir = currentServerDirectory();
@@ -1850,6 +1870,23 @@ void startU2SamePcBundle()
         showError(L"Selected U2 game executable path is invalid.");
         return;
     }
+    const std::wstring configuredAddr = trim(getWindowTextString(g_app.addrEdit));
+    if (configuredAddr.empty() || configuredAddr == L"0.0.0.0")
+    {
+        std::wstring lanIp;
+        if (tryGetPrimaryLanIpv4(&lanIp))
+        {
+            setWindowTextString(g_app.addrEdit, lanIp);
+            appendLogLine(L"UG2 bundle: ADDR auto-resolved from wildcard to " + lanIp + L".");
+        }
+        else
+        {
+            appendLogLine(
+                L"UG2 bundle warning: ADDR is wildcard and LAN IPv4 auto-detect failed; "
+                L"worker will use runtime fallback for endpoint identity.");
+        }
+    }
+
     applyFieldsToConfigEditor();
     appendLogLine(
         L"UG2 bundle: launching real worker first, then patcher injects a visible entry that points to worker listener.");
