@@ -2640,6 +2640,17 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         ensureThemeResources();
         HDC hdc = reinterpret_cast<HDC>(wParam);
         HWND control = reinterpret_cast<HWND>(lParam);
+
+        // Read-only EDIT controls are painted through WM_CTLCOLORSTATIC.
+        // Keep them opaque to avoid scroll redraw artifacts/ghosting.
+        if (control == g_app.eventsView || control == g_app.logView)
+        {
+            SetBkMode(hdc, OPAQUE);
+            SetTextColor(hdc, g_app.colorText);
+            SetBkColor(hdc, g_app.colorInputBg);
+            return reinterpret_cast<LRESULT>(g_app.inputBrush);
+        }
+
         SetBkMode(hdc, TRANSPARENT);
         if (control == g_app.statusValueLabel)
         {
