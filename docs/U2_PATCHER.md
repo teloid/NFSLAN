@@ -15,6 +15,7 @@ This file is part of the AI-enhanced fork documentation.
 3. Clears the LAN entry self-filter flag in game memory (`entry + 0x19c`) repeatedly.
 4. Forces one visible UG2 LAN row in game memory when needed, synchronized to configured name/port/IP injection target.
    For compatibility, launcher-driven flow uses stock-style `NAME` and `PORT|1` row format.
+5. Synthetic row uses `addrB=0` to bias UG2 client toward explicit `addrA` connect path.
 
 It does **not** modify `server.dll` on disk.
 

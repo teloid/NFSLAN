@@ -612,7 +612,8 @@ bool injectSyntheticLanEntry(
     const std::uint32_t expiry = GetTickCount() + 30000;
     const std::uint32_t loopbackNetworkOrder = 0x0100007F; // 127.0.0.1 bytes in memory
     const std::uint32_t addrA = selectedAddrA != 0 ? selectedAddrA : loopbackNetworkOrder;
-    const std::uint32_t addrB = selectedAddrB != 0 ? selectedAddrB : addrA;
+    // For synthetic rows, keep addrB zero so UG2 client takes explicit addrA connect path.
+    const std::uint32_t addrB = 0;
     const std::uint32_t selfFlag = 0;
     if (!writeRemote(process, entry + kLanEntryExpiryOffset, expiry)
         || !writeRemote(process, entry + kLanEntryAddrAOffset, addrA)
@@ -855,6 +856,7 @@ int wmain(int argc, wchar_t* argv[])
         + std::to_wstring(injectPort)
         + L"|1' addr="
         + (injectAddrOverride.has_value() ? formatIpv4StoredOrder(*injectAddrOverride) : L"<auto>")
+        + L" (addrB=0 direct-connect)"
         + L".");
 
     std::uint64_t totalCleared = 0;
