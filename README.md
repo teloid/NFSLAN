@@ -87,7 +87,8 @@ SHA256         : F9DD86C054878CE6276BEB07C1FD61874F7A1E4BF1F241B084C65B73E24168A
 ```
 
  - NFSMV (version 1.3 Black Edition)
-```FileName       : speed.exe
+```
+FileName       : speed.exe
 FullPath       : C:\Program Files (x86)\EA GAMES\Need for Speed Most Wanted\speed.exe
 Size_MB        : 5,75
 Size_Bytes     : 6029312
