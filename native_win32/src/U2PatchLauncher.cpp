@@ -6,7 +6,9 @@
 #include <tlhelp32.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstring>
 #include <cstdint>
 #include <cwchar>
 #include <cwctype>
@@ -20,16 +22,25 @@
 namespace
 {
 
-constexpr wchar_t kBuildTag[] = L"2026-02-11-u2-self-filter-patcher-1";
+constexpr wchar_t kBuildTag[] = L"2026-02-12-u2-force-visible-1";
 
 // Decompiled U2 speed2.exe globals/offsets (base image 0x00400000):
 // DAT_008b7e28 -> LAN discovery manager singleton pointer.
 constexpr std::uintptr_t kLanManagerGlobalRva = 0x004B7E28;
 constexpr std::uintptr_t kLanManagerEntriesStartOffset = 0x28;
 constexpr std::uintptr_t kLanManagerEntriesEndOffset = 0x2C;
+constexpr std::uintptr_t kLanManagerUpdateCounterOffset = 0x4C;
+constexpr std::uintptr_t kLanEntryIdentOffset = 0x08;
 constexpr std::uintptr_t kLanEntryActiveOffset = 0x28;
+constexpr std::uintptr_t kLanEntryNameOffset = 0x28;
+constexpr std::uintptr_t kLanEntryStatsOffset = 0x48;
+constexpr std::uintptr_t kLanEntryExpiryOffset = 0x180;
+constexpr std::uintptr_t kLanEntrySockAddrOffset = 0x184;
+constexpr std::uintptr_t kLanEntryAddrAOffset = 0x194;
+constexpr std::uintptr_t kLanEntryAddrBOffset = 0x198;
 constexpr std::uintptr_t kLanEntryReadyOffset = 0x194;
 constexpr std::uintptr_t kLanEntrySelfFlagOffset = 0x19C;
+constexpr std::uintptr_t kLanEntryTransportOffset = 0x108;
 constexpr std::uintptr_t kLanEntryStride = 0x1A4;
 constexpr std::uint32_t kMaxReasonableEntries = 1024;
 constexpr std::uintptr_t kLegacyImageBase = 0x00400000;
@@ -41,6 +52,8 @@ struct PatchCycleInfo
     std::uint32_t activeCount = 0;
     std::uint32_t readyCount = 0;
     std::uint32_t selfFlagCount = 0;
+    std::uint32_t sampleAddrA = 0;
+    std::uint32_t sampleAddrB = 0;
 };
 
 std::wstring trim(const std::wstring& input)
@@ -196,6 +209,38 @@ bool writeRemote(HANDLE process, std::uintptr_t address, const T& value)
         && writtenBytes == sizeof(T);
 }
 
+bool writeRemoteBytes(HANDLE process, std::uintptr_t address, const void* data, SIZE_T bytes)
+{
+    if (!data || bytes == 0)
+    {
+        return false;
+    }
+
+    SIZE_T writtenBytes = 0;
+    return WriteProcessMemory(process, reinterpret_cast<LPVOID>(address), data, bytes, &writtenBytes)
+        && writtenBytes == bytes;
+}
+
+bool writeRemoteZeroedString(
+    HANDLE process,
+    std::uintptr_t address,
+    SIZE_T maxBytes,
+    const std::string& value)
+{
+    if (maxBytes == 0)
+    {
+        return false;
+    }
+
+    std::vector<char> buffer(maxBytes, '\0');
+    const SIZE_T copyBytes = (std::min)(maxBytes - 1, static_cast<SIZE_T>(value.size()));
+    if (copyBytes > 0)
+    {
+        std::memcpy(buffer.data(), value.data(), copyBytes);
+    }
+    return writeRemoteBytes(process, address, buffer.data(), buffer.size());
+}
+
 std::optional<std::uintptr_t> queryMainModuleBase(DWORD pid)
 {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
@@ -289,12 +334,25 @@ bool patchSelfFilterFlags(HANDLE process, std::uintptr_t imageBase, std::uint64_
         if (ready != 0)
         {
             ++info.readyCount;
+            if (info.sampleAddrA == 0)
+            {
+                info.sampleAddrA = ready;
+            }
         }
 
         std::uint32_t selfFlag = 0;
         if (!readRemote(process, entry + kLanEntrySelfFlagOffset, &selfFlag))
         {
             continue;
+        }
+
+        if (info.sampleAddrB == 0)
+        {
+            std::uint32_t addrB = 0;
+            if (readRemote(process, entry + kLanEntryAddrBOffset, &addrB) && addrB != 0)
+            {
+                info.sampleAddrB = addrB;
+            }
         }
 
         if (selfFlag != 0)
@@ -315,6 +373,117 @@ bool patchSelfFilterFlags(HANDLE process, std::uintptr_t imageBase, std::uint64_
     if (infoOut)
     {
         *infoOut = info;
+    }
+
+    if (cleared > 0)
+    {
+        std::uint32_t updateCounter = 0;
+        if (readRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerUpdateCounterOffset, &updateCounter))
+        {
+            updateCounter += static_cast<std::uint32_t>(cleared);
+            writeRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerUpdateCounterOffset, updateCounter);
+        }
+    }
+    return true;
+}
+
+bool injectSyntheticLanEntry(
+    HANDLE process,
+    std::uint32_t manager,
+    std::uint32_t entryCount,
+    std::uint32_t preferredAddrA,
+    std::uint32_t preferredAddrB,
+    std::uint64_t* injectedOut)
+{
+    if (!manager || entryCount == 0 || entryCount > kMaxReasonableEntries)
+    {
+        if (injectedOut)
+        {
+            *injectedOut = 0;
+        }
+        return true;
+    }
+
+    std::uint32_t entriesStart = 0;
+    std::uint32_t entriesEnd = 0;
+    if (!readRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerEntriesStartOffset, &entriesStart)
+        || !readRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerEntriesEndOffset, &entriesEnd))
+    {
+        return false;
+    }
+    if (entriesEnd <= entriesStart)
+    {
+        if (injectedOut)
+        {
+            *injectedOut = 0;
+        }
+        return true;
+    }
+
+    const std::uintptr_t entry = static_cast<std::uintptr_t>(entriesStart);
+
+    std::vector<std::uint8_t> zeroEntry(static_cast<size_t>(kLanEntryStride), 0);
+    if (!writeRemoteBytes(process, entry, zeroEntry.data(), static_cast<SIZE_T>(zeroEntry.size())))
+    {
+        return false;
+    }
+
+    const std::array<std::uint8_t, 4> header = {{'g', 'E', 'A', 0x03}};
+    if (!writeRemoteBytes(process, entry, header.data(), header.size()))
+    {
+        return false;
+    }
+
+    const std::string ident = "NFSU2NA";
+    const std::string name = "NAME";
+    const std::string stats = "9900|0";
+    const std::string transport = "TCP:~1:1024\tUDP:~1:1024";
+
+    if (!writeRemoteZeroedString(process, entry + kLanEntryIdentOffset, 8, ident)
+        || !writeRemoteZeroedString(process, entry + kLanEntryNameOffset, 0x20, name)
+        || !writeRemoteZeroedString(process, entry + kLanEntryStatsOffset, 0xC0, stats)
+        || !writeRemoteZeroedString(process, entry + kLanEntryTransportOffset, 0x78, transport))
+    {
+        return false;
+    }
+
+    const std::uint32_t expiry = GetTickCount() + 30000;
+    const std::uint32_t loopbackNetworkOrder = 0x0100007F; // 127.0.0.1 bytes in memory
+    const std::uint32_t addrA = preferredAddrA != 0 ? preferredAddrA : loopbackNetworkOrder;
+    const std::uint32_t addrB = preferredAddrB != 0 ? preferredAddrB : addrA;
+    const std::uint32_t selfFlag = 0;
+    if (!writeRemote(process, entry + kLanEntryExpiryOffset, expiry)
+        || !writeRemote(process, entry + kLanEntryAddrAOffset, addrA)
+        || !writeRemote(process, entry + kLanEntryAddrBOffset, addrB)
+        || !writeRemote(process, entry + kLanEntrySelfFlagOffset, selfFlag))
+    {
+        return false;
+    }
+
+    std::array<std::uint8_t, 16> fakeSockAddr{};
+    fakeSockAddr[0] = 0x02; // AF_INET little-endian
+    fakeSockAddr[1] = 0x00;
+    fakeSockAddr[2] = 0x27; // port 9999 big-endian
+    fakeSockAddr[3] = 0x0F;
+    fakeSockAddr[4] = static_cast<std::uint8_t>(addrA & 0xFF);
+    fakeSockAddr[5] = static_cast<std::uint8_t>((addrA >> 8) & 0xFF);
+    fakeSockAddr[6] = static_cast<std::uint8_t>((addrA >> 16) & 0xFF);
+    fakeSockAddr[7] = static_cast<std::uint8_t>((addrA >> 24) & 0xFF);
+    if (!writeRemoteBytes(process, entry + kLanEntrySockAddrOffset, fakeSockAddr.data(), fakeSockAddr.size()))
+    {
+        return false;
+    }
+
+    std::uint32_t updateCounter = 0;
+    if (readRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerUpdateCounterOffset, &updateCounter))
+    {
+        ++updateCounter;
+        writeRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerUpdateCounterOffset, updateCounter);
+    }
+
+    if (injectedOut)
+    {
+        *injectedOut = 1;
     }
     return true;
 }
@@ -447,8 +616,10 @@ int wmain(int argc, wchar_t* argv[])
 
     logLine(L"Game resumed. Self-filter patch loop is active.");
     logLine(L"Patch offsets: manager=+0x4B7E28 entryStride=0x1A4 active=+0x28 ready=+0x194 self=+0x19C.");
+    logLine(L"Force-visible mode: synthetic LAN entry injection is enabled.");
 
     std::uint64_t totalCleared = 0;
+    std::uint64_t totalInjected = 0;
     auto lastSummary = std::chrono::steady_clock::now();
     bool postResumeBaseLogged = false;
 
@@ -500,6 +671,23 @@ int wmain(int argc, wchar_t* argv[])
             break;
         }
 
+        std::uint64_t injectedThisCycle = 0;
+        if (!injectSyntheticLanEntry(
+                pi.hProcess,
+                cycleInfo.manager,
+                cycleInfo.entryCount,
+                cycleInfo.sampleAddrA,
+                cycleInfo.sampleAddrB,
+                &injectedThisCycle))
+        {
+            logLine(L"WriteProcessMemory failed while injecting synthetic LAN entry. Stopping patch loop.");
+            break;
+        }
+        if (injectedThisCycle > 0)
+        {
+            totalInjected += injectedThisCycle;
+        }
+
         if (clearedThisCycle > 0)
         {
             totalCleared += clearedThisCycle;
@@ -524,6 +712,7 @@ int wmain(int argc, wchar_t* argv[])
                        << L" ready=" << cycleInfo.readyCount
                        << L" self=" << cycleInfo.selfFlagCount
                        << L" totalCleared=" << totalCleared
+                       << L" totalInjected=" << totalInjected
                        << L".";
                 logLine(status.str());
             }
@@ -534,6 +723,7 @@ int wmain(int argc, wchar_t* argv[])
     GetExitCodeProcess(pi.hProcess, &exitCode);
     logLine(L"Game exited with code " + std::to_wstring(exitCode) + L".");
     logLine(L"Final total cleared self-filter flags: " + std::to_wstring(totalCleared) + L".");
+    logLine(L"Final total synthetic entries injected: " + std::to_wstring(totalInjected) + L".");
 
     CloseHandle(pi.hProcess);
     return 0;
