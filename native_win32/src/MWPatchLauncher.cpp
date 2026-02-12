@@ -23,13 +23,38 @@
 namespace
 {
 
-constexpr wchar_t kBuildTag[] = L"2026-02-12-mw-self-filter-1";
+constexpr wchar_t kBuildTag[] = L"2026-02-12-mw-force-visible-1";
+
+// Decompiled MW speed.exe globals/offsets (base image 0x00400000):
+// DAT_009c3878 -> LAN discovery manager singleton pointer.
+constexpr std::uintptr_t kLanManagerGlobalRva = 0x005C3878;
+constexpr std::uintptr_t kLanManagerEntriesStartOffset = 0x28;
+constexpr std::uintptr_t kLanManagerEntriesEndOffset = 0x2C;
+constexpr std::uintptr_t kLanManagerUpdateCounterOffset = 0x4C;
+constexpr std::uintptr_t kLanEntryIdentOffset = 0x08;
+constexpr std::uintptr_t kLanEntryActiveOffset = 0x28;
+constexpr std::uintptr_t kLanEntryNameOffset = 0x28;
+constexpr std::uintptr_t kLanEntryStatsOffset = 0x48;
+constexpr std::uintptr_t kLanEntryTransportOffset = 0x108;
+constexpr std::uintptr_t kLanEntryExpiryOffset = 0x180;
+constexpr std::uintptr_t kLanEntrySockAddrOffset = 0x184;
+constexpr std::uintptr_t kLanEntryAddrAOffset = 0x194;
+constexpr std::uintptr_t kLanEntryAddrBOffset = 0x198;
+constexpr std::uintptr_t kLanEntrySelfFlagOffset = 0x19C;
+constexpr std::uintptr_t kLanEntryStride = 0x1A4;
+constexpr std::uint32_t kMaxReasonableEntries = 1024;
 constexpr std::uintptr_t kLegacyImageBase = 0x00400000;
 
-// Most Wanted LAN row layout is compatible with the U2 row fields we patch:
-// row[0x08] = ident, row[0x19C] = self-filter flag.
-constexpr std::uintptr_t kLanEntryIdentOffset = 0x08;
-constexpr std::uintptr_t kLanEntrySelfFlagOffset = 0x19C;
+struct PatchCycleInfo
+{
+    std::uint32_t manager = 0;
+    std::uint32_t entryCount = 0;
+    std::uint32_t activeCount = 0;
+    std::uint32_t addrCount = 0;
+    std::uint32_t selfFlagCount = 0;
+    std::uint32_t sampleAddrA = 0;
+    std::uint32_t sampleAddrB = 0;
+};
 
 std::wstring trim(const std::wstring& input)
 {
@@ -77,6 +102,82 @@ bool tryParseIntRange(const std::wstring& text, int minValue, int maxValue, int*
 
     *valueOut = static_cast<int>(value);
     return true;
+}
+
+bool tryParseIpv4StoredOrder(const std::wstring& text, std::uint32_t* valueOut)
+{
+    if (!valueOut)
+    {
+        return false;
+    }
+
+    const std::wstring trimmed = trim(text);
+    if (trimmed.empty())
+    {
+        return false;
+    }
+
+    int a = -1;
+    int b = -1;
+    int c = -1;
+    int d = -1;
+    wchar_t trailing = 0;
+    const int readCount = swscanf_s(trimmed.c_str(), L"%d.%d.%d.%d%c", &a, &b, &c, &d, &trailing, 1);
+    if (readCount != 4)
+    {
+        return false;
+    }
+    if (a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255)
+    {
+        return false;
+    }
+
+    // Lan manager expects IPv4 in network-order integer form (A.B.C.D => 0xAABBCCDD).
+    *valueOut =
+        (static_cast<std::uint32_t>(a) << 24)
+        | (static_cast<std::uint32_t>(b) << 16)
+        | (static_cast<std::uint32_t>(c) << 8)
+        | static_cast<std::uint32_t>(d);
+    return true;
+}
+
+std::wstring formatIpv4StoredOrder(std::uint32_t value)
+{
+    std::wstringstream stream;
+    stream << ((value >> 24) & 0xFF) << L"."
+           << ((value >> 16) & 0xFF) << L"."
+           << ((value >> 8) & 0xFF) << L"."
+           << (value & 0xFF);
+    return stream.str();
+}
+
+std::string sanitizeAscii(const std::wstring& text, size_t maxBytes)
+{
+    std::string output;
+    if (maxBytes == 0)
+    {
+        return output;
+    }
+
+    output.reserve((std::min)(maxBytes, text.size()));
+    for (wchar_t ch : text)
+    {
+        if (output.size() + 1 >= maxBytes)
+        {
+            break;
+        }
+
+        if (ch >= 32 && ch <= 126)
+        {
+            output.push_back(static_cast<char>(ch));
+        }
+        else
+        {
+            output.push_back('_');
+        }
+    }
+
+    return output;
 }
 
 std::wstring nowTimestamp()
@@ -197,11 +298,51 @@ std::wstring browseForGameExe()
 }
 
 template <typename T>
+bool readRemote(HANDLE process, std::uintptr_t address, T* out)
+{
+    SIZE_T readBytes = 0;
+    return ReadProcessMemory(process, reinterpret_cast<LPCVOID>(address), out, sizeof(T), &readBytes)
+        && readBytes == sizeof(T);
+}
+
+template <typename T>
 bool writeRemote(HANDLE process, std::uintptr_t address, const T& value)
 {
     SIZE_T writtenBytes = 0;
     return WriteProcessMemory(process, reinterpret_cast<LPVOID>(address), &value, sizeof(T), &writtenBytes)
         && writtenBytes == sizeof(T);
+}
+
+bool writeRemoteBytes(HANDLE process, std::uintptr_t address, const void* data, SIZE_T bytes)
+{
+    if (!data || bytes == 0)
+    {
+        return false;
+    }
+
+    SIZE_T writtenBytes = 0;
+    return WriteProcessMemory(process, reinterpret_cast<LPVOID>(address), data, bytes, &writtenBytes)
+        && writtenBytes == bytes;
+}
+
+bool writeRemoteZeroedString(
+    HANDLE process,
+    std::uintptr_t address,
+    SIZE_T maxBytes,
+    const std::string& value)
+{
+    if (maxBytes == 0)
+    {
+        return false;
+    }
+
+    std::vector<char> buffer(maxBytes, '\0');
+    const SIZE_T copyBytes = (std::min)(maxBytes - 1, static_cast<SIZE_T>(value.size()));
+    if (copyBytes > 0)
+    {
+        std::memcpy(buffer.data(), value.data(), copyBytes);
+    }
+    return writeRemoteBytes(process, address, buffer.data(), buffer.size());
 }
 
 std::optional<std::uintptr_t> queryMainModuleBase(DWORD pid)
@@ -225,167 +366,306 @@ std::optional<std::uintptr_t> queryMainModuleBase(DWORD pid)
     return base;
 }
 
-bool isCandidateIdent(const std::uint8_t* ptr, size_t available)
+bool patchSelfFilterFlags(HANDLE process, std::uintptr_t imageBase, std::uint64_t* clearedOut, PatchCycleInfo* infoOut)
 {
-    if (!ptr || available < 5)
+    if (!clearedOut)
     {
         return false;
     }
 
-    if (available >= 7 && std::memcmp(ptr, "NFSMWNA", 7) == 0)
+    PatchCycleInfo info{};
+    std::uint32_t manager = 0;
+    if (!readRemote(process, imageBase + kLanManagerGlobalRva, &manager))
     {
+        return false;
+    }
+    info.manager = manager;
+    if (manager == 0)
+    {
+        if (infoOut)
+        {
+            *infoOut = info;
+        }
+        *clearedOut = 0;
         return true;
     }
 
-    if (std::memcmp(ptr, "NFSMW", 5) == 0)
+    std::uint32_t entriesStart = 0;
+    std::uint32_t entriesEnd = 0;
+    if (!readRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerEntriesStartOffset, &entriesStart)
+        || !readRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerEntriesEndOffset, &entriesEnd))
     {
+        if (infoOut)
+        {
+            *infoOut = info;
+        }
+        *clearedOut = 0;
         return true;
     }
 
-    return false;
-}
-
-bool isWritableUserPage(const MEMORY_BASIC_INFORMATION& mbi)
-{
-    if (mbi.State != MEM_COMMIT)
+    if (entriesEnd <= entriesStart)
     {
-        return false;
-    }
-    if ((mbi.Protect & PAGE_GUARD) || (mbi.Protect & PAGE_NOACCESS))
-    {
-        return false;
-    }
-    if (mbi.Type != MEM_PRIVATE)
-    {
-        return false;
-    }
-
-    const DWORD p = mbi.Protect & 0xFF;
-    return p == PAGE_READWRITE
-        || p == PAGE_WRITECOPY
-        || p == PAGE_EXECUTE_READWRITE
-        || p == PAGE_EXECUTE_WRITECOPY;
-}
-
-bool scanAndPatchMwSelfFilter(
-    HANDLE process,
-    std::uint64_t* scannedRowsOut,
-    std::uint64_t* clearedRowsOut)
-{
-    if (!scannedRowsOut || !clearedRowsOut)
-    {
-        return false;
-    }
-
-    SYSTEM_INFO si{};
-    GetSystemInfo(&si);
-
-    std::uint64_t scannedRows = 0;
-    std::uint64_t clearedRows = 0;
-
-    std::uintptr_t address = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
-    const std::uintptr_t maxAddress = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
-
-    while (address < maxAddress)
-    {
-        MEMORY_BASIC_INFORMATION mbi{};
-        const SIZE_T queried = VirtualQueryEx(process, reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi));
-        if (queried == 0)
+        if (infoOut)
         {
-            break;
+            *infoOut = info;
+        }
+        *clearedOut = 0;
+        return true;
+    }
+
+    const std::uint32_t span = entriesEnd - entriesStart;
+    if ((span % static_cast<std::uint32_t>(kLanEntryStride)) != 0)
+    {
+        info.entryCount = span / static_cast<std::uint32_t>(kLanEntryStride);
+        if (infoOut)
+        {
+            *infoOut = info;
+        }
+        *clearedOut = 0;
+        return true;
+    }
+
+    const std::uint32_t entryCount = span / static_cast<std::uint32_t>(kLanEntryStride);
+    if (entryCount == 0 || entryCount > kMaxReasonableEntries)
+    {
+        info.entryCount = entryCount;
+        if (infoOut)
+        {
+            *infoOut = info;
+        }
+        *clearedOut = 0;
+        return true;
+    }
+    info.entryCount = entryCount;
+
+    std::uint64_t cleared = 0;
+    for (std::uint32_t i = 0; i < entryCount; ++i)
+    {
+        const std::uintptr_t entry = static_cast<std::uintptr_t>(entriesStart) + i * kLanEntryStride;
+
+        std::uint8_t active = 0;
+        if (!readRemote(process, entry + kLanEntryActiveOffset, &active))
+        {
+            continue;
+        }
+        if (active != 0)
+        {
+            ++info.activeCount;
         }
 
-        const std::uintptr_t regionBase = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
-        const SIZE_T regionSize = mbi.RegionSize;
-        std::uintptr_t nextAddress = regionBase + regionSize;
-        if (nextAddress <= address)
+        std::uint32_t addrA = 0;
+        if (readRemote(process, entry + kLanEntryAddrAOffset, &addrA) && addrA != 0)
         {
-            break;
-        }
-
-        if (isWritableUserPage(mbi) && regionSize > 0)
-        {
-            constexpr SIZE_T kChunkSize = 1 << 20; // 1 MiB
-            std::vector<std::uint8_t> buffer(kChunkSize);
-
-            for (SIZE_T chunkOffset = 0; chunkOffset < regionSize; chunkOffset += kChunkSize)
+            ++info.addrCount;
+            if (info.sampleAddrA == 0)
             {
-                const SIZE_T bytesToRead = (std::min)(kChunkSize, regionSize - chunkOffset);
-                SIZE_T readBytes = 0;
-                if (!ReadProcessMemory(
-                        process,
-                        reinterpret_cast<LPCVOID>(regionBase + chunkOffset),
-                        buffer.data(),
-                        bytesToRead,
-                        &readBytes)
-                    || readBytes <= (kLanEntryIdentOffset + 8 + kLanEntrySelfFlagOffset + sizeof(std::uint32_t)))
-                {
-                    continue;
-                }
-
-                const size_t bytes = static_cast<size_t>(readBytes);
-                for (size_t i = static_cast<size_t>(kLanEntryIdentOffset);
-                     i + 8 < bytes;
-                     ++i)
-                {
-                    if (!isCandidateIdent(buffer.data() + i, bytes - i))
-                    {
-                        continue;
-                    }
-
-                    const size_t rowOffset = i - static_cast<size_t>(kLanEntryIdentOffset);
-                    if (rowOffset + kLanEntrySelfFlagOffset + sizeof(std::uint32_t) > bytes)
-                    {
-                        continue;
-                    }
-
-                    if (std::memcmp(buffer.data() + rowOffset, "gEA\x03", 4) != 0)
-                    {
-                        continue;
-                    }
-
-                    ++scannedRows;
-
-                    std::uint32_t selfFlag = 0;
-                    std::memcpy(
-                        &selfFlag,
-                        buffer.data() + rowOffset + static_cast<size_t>(kLanEntrySelfFlagOffset),
-                        sizeof(selfFlag));
-                    if (selfFlag == 0)
-                    {
-                        continue;
-                    }
-
-                    const std::uint32_t zero = 0;
-                    const std::uintptr_t patchAddress =
-                        regionBase + chunkOffset + rowOffset + static_cast<size_t>(kLanEntrySelfFlagOffset);
-                    if (writeRemote(process, patchAddress, zero))
-                    {
-                        ++clearedRows;
-                    }
-                }
+                info.sampleAddrA = addrA;
             }
         }
 
-        address = nextAddress;
+        std::uint32_t addrB = 0;
+        if (info.sampleAddrB == 0 && readRemote(process, entry + kLanEntryAddrBOffset, &addrB) && addrB != 0)
+        {
+            info.sampleAddrB = addrB;
+        }
+
+        std::uint32_t selfFlag = 0;
+        if (!readRemote(process, entry + kLanEntrySelfFlagOffset, &selfFlag))
+        {
+            continue;
+        }
+
+        if (selfFlag != 0)
+        {
+            ++info.selfFlagCount;
+            const std::uint32_t zero = 0;
+            if (writeRemote(process, entry + kLanEntrySelfFlagOffset, zero))
+            {
+                ++cleared;
+            }
+        }
     }
 
-    *scannedRowsOut = scannedRows;
-    *clearedRowsOut = clearedRows;
+    if (cleared > 0)
+    {
+        std::uint32_t updateCounter = 0;
+        if (readRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerUpdateCounterOffset, &updateCounter))
+        {
+            updateCounter += static_cast<std::uint32_t>(cleared);
+            writeRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerUpdateCounterOffset, updateCounter);
+        }
+    }
+
+    *clearedOut = cleared;
+    if (infoOut)
+    {
+        *infoOut = info;
+    }
+    return true;
+}
+
+bool injectSyntheticLanEntry(
+    HANDLE process,
+    std::uint32_t manager,
+    std::uint32_t entryCount,
+    std::uint32_t preferredAddrA,
+    std::uint32_t preferredAddrB,
+    const std::string& injectedName,
+    int injectedPort,
+    std::uint64_t* injectedOut)
+{
+    if (!injectedOut)
+    {
+        return false;
+    }
+
+    if (!manager || entryCount == 0 || entryCount > kMaxReasonableEntries)
+    {
+        *injectedOut = 0;
+        return true;
+    }
+
+    std::uint32_t entriesStart = 0;
+    std::uint32_t entriesEnd = 0;
+    if (!readRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerEntriesStartOffset, &entriesStart)
+        || !readRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerEntriesEndOffset, &entriesEnd))
+    {
+        return false;
+    }
+
+    if (entriesEnd <= entriesStart)
+    {
+        *injectedOut = 0;
+        return true;
+    }
+
+    bool hasRealEntry = false;
+    std::uintptr_t realEntry = 0;
+    std::optional<std::uint32_t> emptySlotIndex;
+    for (std::uint32_t i = 0; i < entryCount; ++i)
+    {
+        const std::uintptr_t candidate = static_cast<std::uintptr_t>(entriesStart) + i * kLanEntryStride;
+
+        std::uint8_t active = 0;
+        if (!readRemote(process, candidate + kLanEntryActiveOffset, &active))
+        {
+            continue;
+        }
+        if (active == 0)
+        {
+            if (!emptySlotIndex.has_value())
+            {
+                emptySlotIndex = i;
+            }
+            continue;
+        }
+
+        std::array<char, 8> ident{};
+        if (!readRemote(process, candidate + kLanEntryIdentOffset, &ident))
+        {
+            continue;
+        }
+
+        if (std::memcmp(ident.data(), "NFSMWNA", 7) == 0 || std::memcmp(ident.data(), "NFSMW", 5) == 0)
+        {
+            hasRealEntry = true;
+            realEntry = candidate;
+            break;
+        }
+    }
+
+    if (hasRealEntry)
+    {
+        std::uint32_t selfFlag = 0;
+        if (readRemote(process, realEntry + kLanEntrySelfFlagOffset, &selfFlag) && selfFlag != 0)
+        {
+            const std::uint32_t zero = 0;
+            writeRemote(process, realEntry + kLanEntrySelfFlagOffset, zero);
+        }
+
+        *injectedOut = 0;
+        return true;
+    }
+
+    const std::uint32_t selectedIndex = emptySlotIndex.value_or(0);
+    const std::uintptr_t entry = static_cast<std::uintptr_t>(entriesStart) + selectedIndex * kLanEntryStride;
+
+    // Ensure no stale bytes remain from previous rows.
+    std::vector<std::uint8_t> zeroed(static_cast<size_t>(kLanEntryStride), 0);
+    if (!writeRemoteBytes(process, entry, zeroed.data(), zeroed.size()))
+    {
+        return false;
+    }
+
+    const std::array<std::uint8_t, 4> header = {{'g', 'E', 'A', 0x03}};
+    if (!writeRemoteBytes(process, entry, header.data(), header.size()))
+    {
+        return false;
+    }
+
+    const std::string ident = "NFSMWNA";
+    const std::string name = injectedName.empty() ? "Test Server" : injectedName;
+    const int clampedPort = (std::max)(1, (std::min)(65535, injectedPort));
+    const std::string stats = std::to_string(clampedPort) + "|0";
+    const std::string transport = "TCP:~1:1024\tUDP:~1:1024";
+
+    if (!writeRemoteZeroedString(process, entry + kLanEntryIdentOffset, 8, ident)
+        || !writeRemoteZeroedString(process, entry + kLanEntryNameOffset, 0x20, name)
+        || !writeRemoteZeroedString(process, entry + kLanEntryStatsOffset, 0xC0, stats)
+        || !writeRemoteZeroedString(process, entry + kLanEntryTransportOffset, 0x78, transport))
+    {
+        return false;
+    }
+
+    const std::uint32_t expiry = GetTickCount() + 30000;
+    const std::uint32_t loopbackNetworkOrder = 0x7F000001; // 127.0.0.1
+    const std::uint32_t addrA = (preferredAddrA != 0) ? preferredAddrA : loopbackNetworkOrder;
+    const std::uint32_t addrB = (preferredAddrB != 0) ? preferredAddrB : addrA;
+    const std::uint32_t selfFlag = 0;
+    if (!writeRemote(process, entry + kLanEntryExpiryOffset, expiry)
+        || !writeRemote(process, entry + kLanEntryAddrAOffset, addrA)
+        || !writeRemote(process, entry + kLanEntryAddrBOffset, addrB)
+        || !writeRemote(process, entry + kLanEntrySelfFlagOffset, selfFlag))
+    {
+        return false;
+    }
+
+    std::array<std::uint8_t, 16> fakeSockAddr{};
+    fakeSockAddr[0] = 0x02; // AF_INET little-endian
+    fakeSockAddr[1] = 0x00;
+    fakeSockAddr[2] = static_cast<std::uint8_t>((clampedPort >> 8) & 0xFF);
+    fakeSockAddr[3] = static_cast<std::uint8_t>(clampedPort & 0xFF);
+    fakeSockAddr[4] = static_cast<std::uint8_t>((addrA >> 24) & 0xFF);
+    fakeSockAddr[5] = static_cast<std::uint8_t>((addrA >> 16) & 0xFF);
+    fakeSockAddr[6] = static_cast<std::uint8_t>((addrA >> 8) & 0xFF);
+    fakeSockAddr[7] = static_cast<std::uint8_t>(addrA & 0xFF);
+    if (!writeRemoteBytes(process, entry + kLanEntrySockAddrOffset, fakeSockAddr.data(), fakeSockAddr.size()))
+    {
+        return false;
+    }
+
+    std::uint32_t updateCounter = 0;
+    if (readRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerUpdateCounterOffset, &updateCounter))
+    {
+        ++updateCounter;
+        writeRemote(process, static_cast<std::uintptr_t>(manager) + kLanManagerUpdateCounterOffset, updateCounter);
+    }
+
+    *injectedOut = 1;
     return true;
 }
 
 void printUsage()
 {
     std::wcout
-        << L"NFSLAN MW self-filter patch launcher\n"
+        << L"NFSLAN MW same-PC patch launcher\n"
         << L"Build tag: " << kBuildTag << L"\n\n"
         << L"Usage:\n"
         << L"  NFSLAN-MW-Patcher.exe [options] [path-to-speed.exe] [game args...]\n\n"
         << L"Options:\n"
-        << L"  --inject-name <name>   Accepted for UI compatibility (currently informational)\n"
-        << L"  --inject-port <port>   Accepted for UI compatibility (currently informational)\n"
-        << L"  --inject-ip <ipv4>     Accepted for UI compatibility (currently informational)\n"
+        << L"  --inject-name <name>   Visible LAN row name (default: Test Server)\n"
+        << L"  --inject-port <port>   Visible LAN row port (default: 9900)\n"
+        << L"  --inject-ip <ipv4>     Visible LAN row target IP (default: observed or 127.0.0.1)\n"
         << L"  --                     Treat all following args as game args\n\n"
         << L"If no path is provided, a file picker opens.\n"
         << L"This launcher keeps running while the game runs.\n";
@@ -399,7 +679,7 @@ int wmain(int argc, wchar_t* argv[])
     std::vector<std::wstring> gameArgs;
     std::wstring injectName = L"Test Server";
     int injectPort = 9900;
-    std::wstring injectIp = L"127.0.0.1";
+    std::optional<std::uint32_t> injectAddrOverride;
     bool forceGameArgs = false;
 
     for (int i = 1; i < argc; ++i)
@@ -457,7 +737,13 @@ int wmain(int argc, wchar_t* argv[])
                 logLine(L"Missing value for --inject-ip.");
                 return 1;
             }
-            injectIp = argv[++i];
+            std::uint32_t parsedIp = 0;
+            if (!tryParseIpv4StoredOrder(argv[++i], &parsedIp))
+            {
+                logLine(L"Invalid --inject-ip value. Expected IPv4 like 127.0.0.1.");
+                return 1;
+            }
+            injectAddrOverride = parsedIp;
             continue;
         }
 
@@ -481,6 +767,8 @@ int wmain(int argc, wchar_t* argv[])
             return 1;
         }
     }
+
+    const std::string injectNameAscii = sanitizeAscii(injectName, 0x20);
 
     const std::filesystem::path gamePath = std::filesystem::path(trim(gameExe));
     if (gamePath.empty() || !std::filesystem::exists(gamePath))
@@ -528,16 +816,9 @@ int wmain(int argc, wchar_t* argv[])
 
     logLine(L"Build tag: " + std::wstring(kBuildTag));
     logLine(L"Launched game suspended: " + gamePath.wstring());
-    logLine(
-        L"Injection compatibility args: name='"
-        + injectName
-        + L"' port="
-        + std::to_wstring(injectPort)
-        + L" ip="
-        + injectIp
-        + L" (MW patcher currently only clears self-filter flags).");
 
     std::optional<std::uintptr_t> imageBase;
+    bool usingFallbackBase = false;
     for (int i = 0; i < 100; ++i)
     {
         imageBase = queryMainModuleBase(pi.dwProcessId);
@@ -550,10 +831,12 @@ int wmain(int argc, wchar_t* argv[])
 
     if (!imageBase.has_value() || *imageBase == 0)
     {
+        logLine(L"WARNING: could not resolve main module base before resume.");
         imageBase = kLegacyImageBase;
+        usingFallbackBase = true;
         std::wstringstream msg;
-        msg << L"WARNING: module base lookup failed before resume, using fallback 0x"
-            << std::hex << *imageBase << std::dec << L".";
+        msg << L"Using legacy fallback base: 0x" << std::hex << *imageBase << std::dec
+            << L" (common for MW 32-bit images).";
         logLine(msg.str());
     }
     else
@@ -567,16 +850,25 @@ int wmain(int argc, wchar_t* argv[])
     CloseHandle(pi.hThread);
     pi.hThread = nullptr;
 
-    logLine(L"Game resumed. MW self-filter patch scan loop is active.");
+    logLine(L"Game resumed. Patch loop is active.");
+    logLine(L"Patch offsets: manager=+0x5C3878 entryStride=0x1A4 self=+0x19C.");
+    logLine(
+        L"Injection target: name='"
+        + std::wstring(injectNameAscii.begin(), injectNameAscii.end())
+        + L"' stats='"
+        + std::to_wstring(injectPort)
+        + L"|0' addr="
+        + (injectAddrOverride.has_value() ? formatIpv4StoredOrder(*injectAddrOverride) : L"<auto>")
+        + L".");
 
-    std::uint64_t totalScannedRows = 0;
-    std::uint64_t totalClearedRows = 0;
-    auto lastScan = std::chrono::steady_clock::now() - std::chrono::seconds(5);
+    std::uint64_t totalCleared = 0;
+    std::uint64_t totalInjected = 0;
     auto lastSummary = std::chrono::steady_clock::now();
+    bool postResumeBaseLogged = false;
 
     while (true)
     {
-        const DWORD waitResult = WaitForSingleObject(pi.hProcess, 120);
+        const DWORD waitResult = WaitForSingleObject(pi.hProcess, 100);
         if (waitResult == WAIT_OBJECT_0)
         {
             break;
@@ -588,53 +880,97 @@ int wmain(int argc, wchar_t* argv[])
             break;
         }
 
-        const auto now = std::chrono::steady_clock::now();
-        if (now - lastScan < std::chrono::seconds(1))
+        if (!imageBase.has_value() || *imageBase == 0)
         {
+            imageBase = queryMainModuleBase(pi.dwProcessId);
+            if (imageBase.has_value() && *imageBase != 0 && !postResumeBaseLogged)
+            {
+                postResumeBaseLogged = true;
+                std::wstringstream msg;
+                msg << L"Resolved module base after resume: 0x" << std::hex << *imageBase << std::dec;
+                logLine(msg.str());
+            }
             continue;
         }
-        lastScan = now;
 
-        std::uint64_t scannedThisCycle = 0;
+        if (usingFallbackBase)
+        {
+            const std::optional<std::uintptr_t> probedBase = queryMainModuleBase(pi.dwProcessId);
+            if (probedBase.has_value() && *probedBase != 0)
+            {
+                usingFallbackBase = false;
+                imageBase = probedBase;
+                std::wstringstream msg;
+                msg << L"Replaced fallback base with detected module base: 0x" << std::hex << *imageBase << std::dec;
+                logLine(msg.str());
+            }
+        }
+
         std::uint64_t clearedThisCycle = 0;
-        if (!scanAndPatchMwSelfFilter(pi.hProcess, &scannedThisCycle, &clearedThisCycle))
+        PatchCycleInfo cycleInfo{};
+        if (!patchSelfFilterFlags(pi.hProcess, *imageBase, &clearedThisCycle, &cycleInfo))
         {
-            logLine(L"MW scan failed unexpectedly. Continuing.");
-            continue;
+            logLine(L"ReadProcessMemory failed while patching. Stopping patch loop.");
+            break;
         }
 
-        totalScannedRows += scannedThisCycle;
-        totalClearedRows += clearedThisCycle;
+        std::uint64_t injectedThisCycle = 0;
+        if (!injectSyntheticLanEntry(
+                pi.hProcess,
+                cycleInfo.manager,
+                cycleInfo.entryCount,
+                injectAddrOverride.value_or(cycleInfo.sampleAddrA),
+                injectAddrOverride.value_or(cycleInfo.sampleAddrB),
+                injectNameAscii,
+                injectPort,
+                &injectedThisCycle))
+        {
+            logLine(L"WriteProcessMemory failed while injecting synthetic LAN entry. Stopping patch loop.");
+            break;
+        }
+        if (injectedThisCycle > 0)
+        {
+            totalInjected += injectedThisCycle;
+        }
 
         if (clearedThisCycle > 0)
         {
+            totalCleared += clearedThisCycle;
             logLine(
                 L"Cleared "
                 + std::to_wstring(clearedThisCycle)
-                + L" MW self-filter flag(s) this cycle, total="
-                + std::to_wstring(totalClearedRows)
+                + L" self-filter flag(s) this cycle, total="
+                + std::to_wstring(totalCleared)
                 + L".");
         }
-        else if (now - lastSummary >= std::chrono::seconds(5))
+        else
         {
-            lastSummary = now;
-            logLine(
-                L"Patch loop alive. scannedRowsThisCycle="
-                + std::to_wstring(scannedThisCycle)
-                + L" totalScannedRows="
-                + std::to_wstring(totalScannedRows)
-                + L" totalCleared="
-                + std::to_wstring(totalClearedRows)
-                + L".");
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastSummary >= std::chrono::seconds(5))
+            {
+                lastSummary = now;
+                std::wstringstream status;
+                status << L"Patch loop alive. base=0x" << std::hex << *imageBase << std::dec
+                       << L" manager=0x" << std::hex << cycleInfo.manager << std::dec
+                       << L" entries=" << cycleInfo.entryCount
+                       << L" active=" << cycleInfo.activeCount
+                       << L" addr=" << cycleInfo.addrCount
+                       << L" self=" << cycleInfo.selfFlagCount
+                       << L" totalCleared=" << totalCleared
+                       << L" totalInjected=" << totalInjected
+                       << L".";
+                logLine(status.str());
+            }
         }
     }
 
     DWORD exitCode = 0;
     GetExitCodeProcess(pi.hProcess, &exitCode);
     logLine(L"Game exited with code " + std::to_wstring(exitCode) + L".");
-    logLine(L"Final scanned MW rows: " + std::to_wstring(totalScannedRows) + L".");
-    logLine(L"Final cleared MW self-filter flags: " + std::to_wstring(totalClearedRows) + L".");
+    logLine(L"Final total cleared self-filter flags: " + std::to_wstring(totalCleared) + L".");
+    logLine(L"Final total synthetic entries injected: " + std::to_wstring(totalInjected) + L".");
 
     CloseHandle(pi.hProcess);
     return 0;
 }
+
