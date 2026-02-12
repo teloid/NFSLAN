@@ -115,21 +115,22 @@ bool tryParseIpv4StoredOrder(const std::wstring& text, std::uint32_t* valueOut)
         return false;
     }
 
+    // Lan manager expects IPv4 in network-order integer form (A.B.C.D => 0xAABBCCDD).
     *valueOut =
-        static_cast<std::uint32_t>(a)
-        | (static_cast<std::uint32_t>(b) << 8)
-        | (static_cast<std::uint32_t>(c) << 16)
-        | (static_cast<std::uint32_t>(d) << 24);
+        (static_cast<std::uint32_t>(a) << 24)
+        | (static_cast<std::uint32_t>(b) << 16)
+        | (static_cast<std::uint32_t>(c) << 8)
+        | static_cast<std::uint32_t>(d);
     return true;
 }
 
 std::wstring formatIpv4StoredOrder(std::uint32_t value)
 {
     std::wstringstream stream;
-    stream << (value & 0xFF) << L"."
-           << ((value >> 8) & 0xFF) << L"."
+    stream << ((value >> 24) & 0xFF) << L"."
            << ((value >> 16) & 0xFF) << L"."
-           << ((value >> 24) & 0xFF);
+           << ((value >> 8) & 0xFF) << L"."
+           << (value & 0xFF);
     return stream.str();
 }
 
@@ -610,7 +611,7 @@ bool injectSyntheticLanEntry(
     }
 
     const std::uint32_t expiry = GetTickCount() + 30000;
-    const std::uint32_t loopbackNetworkOrder = 0x0100007F; // 127.0.0.1 bytes in memory
+    const std::uint32_t loopbackNetworkOrder = 0x7F000001; // 127.0.0.1 in network-order integer form
     const std::uint32_t addrA = selectedAddrA != 0 ? selectedAddrA : loopbackNetworkOrder;
     // For synthetic rows, keep addrB zero so UG2 client takes explicit addrA connect path.
     const std::uint32_t addrB = 0;
@@ -628,10 +629,10 @@ bool injectSyntheticLanEntry(
     fakeSockAddr[1] = 0x00;
     fakeSockAddr[2] = 0x27; // port 9999 big-endian
     fakeSockAddr[3] = 0x0F;
-    fakeSockAddr[4] = static_cast<std::uint8_t>(addrA & 0xFF);
-    fakeSockAddr[5] = static_cast<std::uint8_t>((addrA >> 8) & 0xFF);
-    fakeSockAddr[6] = static_cast<std::uint8_t>((addrA >> 16) & 0xFF);
-    fakeSockAddr[7] = static_cast<std::uint8_t>((addrA >> 24) & 0xFF);
+    fakeSockAddr[4] = static_cast<std::uint8_t>((addrA >> 24) & 0xFF);
+    fakeSockAddr[5] = static_cast<std::uint8_t>((addrA >> 16) & 0xFF);
+    fakeSockAddr[6] = static_cast<std::uint8_t>((addrA >> 8) & 0xFF);
+    fakeSockAddr[7] = static_cast<std::uint8_t>(addrA & 0xFF);
     if (!writeRemoteBytes(process, entry + kLanEntrySockAddrOffset, fakeSockAddr.data(), fakeSockAddr.size()))
     {
         return false;
