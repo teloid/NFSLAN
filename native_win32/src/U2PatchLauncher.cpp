@@ -23,7 +23,7 @@
 namespace
 {
 
-constexpr wchar_t kBuildTag[] = L"2026-02-12-u2-force-visible-4";
+constexpr wchar_t kBuildTag[] = L"2026-02-12-u2-force-visible-5";
 
 // Decompiled U2 speed2.exe globals/offsets (base image 0x00400000):
 // DAT_008b7e28 -> LAN discovery manager singleton pointer.
@@ -612,15 +612,12 @@ bool injectSyntheticLanEntry(
         return true;
     }
 
-    // Do not synthesize from an uninitialized slot. That can create entries that
-    // are visible in UI but do not represent a connectable host.
+    // If nothing active is present yet, seed slot 0 so the server list is not empty.
+    // This is fallback-only and still points to the real worker listener IP/port.
     if (!selected)
     {
-        if (injectedOut)
-        {
-            *injectedOut = 0;
-        }
-        return true;
+        selected = true;
+        selectedIndex = 0;
     }
 
     const std::uintptr_t entry = static_cast<std::uintptr_t>(entriesStart) + selectedIndex * kLanEntryStride;
