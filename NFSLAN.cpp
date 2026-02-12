@@ -60,6 +60,8 @@ struct WorkerLaunchOptions
     bool sameMachineMode = false;
     bool localEmulation = false;
     bool lanDiag = false;
+    bool ug2BeaconEmulation = false;
+    bool beaconOnly = false;
     std::optional<int> u2Mode;
 };
 
@@ -69,6 +71,7 @@ struct WorkerResolvedSettings
     bool lanDiag = false;
     bool sameMachineMode = false;
     bool localEmulation = false;
+    bool ug2BeaconEmulation = false;
     int discoveryPort = 9999;
     std::string discoveryAddr = "127.0.0.1";
 };
@@ -76,7 +79,7 @@ struct WorkerResolvedSettings
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-11-u2-self-filter-aware-1";
+constexpr const char* kBuildTag = "2026-02-11-u2-beacon-emu-1";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -87,6 +90,11 @@ constexpr size_t kUg2StatsMax = 0xC0;
 
 std::atomic<bool> gLanBridgeRunning{ false };
 std::thread gLanBridgeThread;
+std::atomic<bool> gUg2BeaconEmuRunning{ false };
+std::thread gUg2BeaconEmuThread;
+std::atomic<int> gUg2BeaconPort{ 9900 };
+std::string gUg2BeaconServerName = "UG2 Dedicated Server";
+std::string gUg2BeaconLobbyIdent = "NFSU2NA";
 
 using SendToFn = int (WSAAPI*)(SOCKET, const char*, int, int, const sockaddr*, int);
 SendToFn gOriginalSendTo = nullptr;
@@ -702,6 +710,48 @@ void LogUg2LanBeaconDiag(const char* sourceTag, const char* payload, int length,
     std::cout << "NFSLAN: LAN-DIAG " << sourceTag << " bytes[0..63]: " << preview << '\n';
 }
 
+void WriteAsciiFieldToBuffer(char* buffer, size_t bufferSize, size_t offset, size_t maxFieldLen, const std::string& value)
+{
+    if (!buffer || bufferSize == 0 || offset >= bufferSize || maxFieldLen == 0)
+    {
+        return;
+    }
+
+    const size_t safeMaxLen = (std::min)(maxFieldLen, bufferSize - offset);
+    if (safeMaxLen == 0)
+    {
+        return;
+    }
+
+    const size_t copyLen = (std::min)(value.size(), safeMaxLen - 1);
+    if (copyLen > 0)
+    {
+        std::memcpy(buffer + offset, value.data(), copyLen);
+    }
+    buffer[offset + copyLen] = '\0';
+}
+
+std::array<char, kUg2LanBeaconLength> BuildSyntheticUg2Beacon(const std::string& lobbyIdent, const std::string& serverName, int port)
+{
+    std::array<char, kUg2LanBeaconLength> packet{};
+    packet[0] = 'g';
+    packet[1] = 'E';
+    packet[2] = 'A';
+    packet[3] = 0x03;
+
+    const std::string effectiveLobby = TrimAscii(lobbyIdent).empty() ? "NFSU2NA" : TrimAscii(lobbyIdent);
+    const std::string effectiveServerName = TrimAscii(serverName).empty() ? "NAME" : TrimAscii(serverName);
+    const int effectivePort = (std::max)(1, (std::min)(65535, port));
+    const std::string stats = std::to_string(effectivePort) + "|1";
+
+    WriteAsciiFieldToBuffer(packet.data(), packet.size(), kUg2IdentOffset, kUg2IdentMax, effectiveLobby);
+    WriteAsciiFieldToBuffer(packet.data(), packet.size(), kUg2NameOffset, kUg2NameMax, effectiveServerName);
+    WriteAsciiFieldToBuffer(packet.data(), packet.size(), kUg2StatsOffset, kUg2StatsMax, stats);
+    WriteAsciiFieldToBuffer(packet.data(), packet.size(), 0x108, 0x40, "TCP:~1:1024\tUDP:~1:1024");
+
+    return packet;
+}
+
 void MirrorUg2BeaconToLoopback(SOCKET socketHandle, const char* payload, int length, int flags)
 {
     if (!gSameMachineModeEnabled.load() || !gOriginalSendTo || !payload || length <= 0)
@@ -1235,6 +1285,164 @@ void StopLanDiscoveryLoopbackBridge()
     }
 }
 
+void RunUg2BeaconEmulator()
+{
+    try
+    {
+        WSASession wsaSession;
+        SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock == INVALID_SOCKET)
+        {
+            const int err = WSAGetLastError();
+            std::cerr << "NFSLAN: WARNING - UG2 beacon emulator socket creation failed (WSA error " << err << ").\n";
+            return;
+        }
+
+        int allowBroadcast = 1;
+        setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&allowBroadcast), sizeof(allowBroadcast));
+        int reuseAddress = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuseAddress), sizeof(reuseAddress));
+
+        bool boundTo9999 = false;
+        sockaddr_in bindAddr{};
+        bindAddr.sin_family = AF_INET;
+        bindAddr.sin_port = htons(static_cast<u_short>(kDefaultLanDiscoveryPort));
+        bindAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+        if (bind(sock, reinterpret_cast<sockaddr*>(&bindAddr), sizeof(bindAddr)) == 0)
+        {
+            boundTo9999 = true;
+            std::cout << "NFSLAN: UG2 beacon emulator bound source UDP 9999.\n";
+        }
+        else
+        {
+            const int err = WSAGetLastError();
+            std::cout << "NFSLAN: WARNING - UG2 beacon emulator could not bind source UDP 9999 (WSA error "
+                      << err << "); using ephemeral source port.\n";
+        }
+
+        const int discoveryPort = (std::max)(1, (std::min)(65535, gLanDiscoveryPort.load()));
+        const std::string discoveryAddrText = TrimAscii(gLanDiscoveryAddr);
+        in_addr discoveryAddr{};
+        const bool hasDiscoveryAddr = TryParseIpv4Address(discoveryAddrText, &discoveryAddr);
+
+        auto sendBeaconTo = [&](const std::array<char, kUg2LanBeaconLength>& packet, const sockaddr_in& target) -> bool
+        {
+            const int result = sendto(
+                sock,
+                packet.data(),
+                static_cast<int>(packet.size()),
+                0,
+                reinterpret_cast<const sockaddr*>(&target),
+                sizeof(target));
+            return result == static_cast<int>(packet.size());
+        };
+
+        std::cout << "NFSLAN: UG2 beacon emulator active on UDP " << kDefaultLanDiscoveryPort
+                  << " (discovery endpoint " << (hasDiscoveryAddr ? discoveryAddrText : std::string("127.0.0.1"))
+                  << ":" << discoveryPort << ").\n";
+        if (boundTo9999)
+        {
+            std::cout << "NFSLAN: UG2 beacon emulator sends with source port 9999.\n";
+        }
+
+        while (gUg2BeaconEmuRunning.load())
+        {
+            const auto packet = BuildSyntheticUg2Beacon(
+                gUg2BeaconLobbyIdent,
+                gUg2BeaconServerName,
+                gUg2BeaconPort.load());
+
+            sockaddr_in loopback9999{};
+            loopback9999.sin_family = AF_INET;
+            loopback9999.sin_port = htons(static_cast<u_short>(kDefaultLanDiscoveryPort));
+            loopback9999.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+            sockaddr_in broadcast9999{};
+            broadcast9999.sin_family = AF_INET;
+            broadcast9999.sin_port = htons(static_cast<u_short>(kDefaultLanDiscoveryPort));
+            broadcast9999.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+
+            const bool loopbackSent = sendBeaconTo(packet, loopback9999);
+            const bool broadcastSent = sendBeaconTo(packet, broadcast9999);
+
+            bool discoverySent = false;
+            if (hasDiscoveryAddr)
+            {
+                sockaddr_in discoveryTarget{};
+                discoveryTarget.sin_family = AF_INET;
+                discoveryTarget.sin_port = htons(static_cast<u_short>(discoveryPort));
+                discoveryTarget.sin_addr = discoveryAddr;
+                discoverySent = sendBeaconTo(packet, discoveryTarget);
+
+                if (discoveryTarget.sin_addr.s_addr != htonl(INADDR_LOOPBACK))
+                {
+                    sockaddr_in loopbackDiscovery{};
+                    loopbackDiscovery.sin_family = AF_INET;
+                    loopbackDiscovery.sin_port = htons(static_cast<u_short>(discoveryPort));
+                    loopbackDiscovery.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                    sendBeaconTo(packet, loopbackDiscovery);
+                }
+            }
+
+            if (gLanDiagEnabled.load() && ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 120))
+            {
+                LogUg2LanBeaconDiag("beacon-emu-send", packet.data(), static_cast<int>(packet.size()), false);
+            }
+
+            if (!loopbackSent && !broadcastSent && !discoverySent)
+            {
+                std::cerr << "NFSLAN: WARNING - UG2 beacon emulator send failed (WSA error "
+                          << WSAGetLastError() << ").\n";
+            }
+
+            Sleep(1000);
+        }
+
+        closesocket(sock);
+    }
+    catch (const std::exception& ex)
+    {
+        std::cerr << "NFSLAN: WARNING - UG2 beacon emulator failed: " << ex.what() << '\n';
+    }
+}
+
+void StartUg2BeaconEmulator(bool enabled, const std::string& lobbyIdent, const std::string& serverName, int port)
+{
+    if (!enabled || gUg2BeaconEmuRunning.load())
+    {
+        return;
+    }
+
+    gUg2BeaconLobbyIdent = TrimAscii(lobbyIdent).empty() ? "NFSU2NA" : TrimAscii(lobbyIdent);
+    gUg2BeaconServerName = TrimAscii(serverName).empty() ? "NAME" : TrimAscii(serverName);
+    gUg2BeaconPort.store((std::max)(1, (std::min)(65535, port)));
+
+    gUg2BeaconEmuRunning.store(true);
+    try
+    {
+        gUg2BeaconEmuThread = std::thread(RunUg2BeaconEmulator);
+    }
+    catch (const std::exception& ex)
+    {
+        gUg2BeaconEmuRunning.store(false);
+        std::cerr << "NFSLAN: WARNING - failed to start UG2 beacon emulator thread: " << ex.what() << '\n';
+    }
+}
+
+void StopUg2BeaconEmulator()
+{
+    if (!gUg2BeaconEmuRunning.load())
+    {
+        return;
+    }
+
+    gUg2BeaconEmuRunning.store(false);
+    if (gUg2BeaconEmuThread.joinable())
+    {
+        gUg2BeaconEmuThread.join();
+    }
+}
+
 void LogLanDiscoveryPortDiagnostic(int discoveryPort)
 {
     try
@@ -1447,6 +1655,8 @@ void PrintUsage()
         << "  --same-machine  Force same-PC host mode (sets FORCE_LOCAL and addr fixups)\n"
         << "  --local-host    Alias for --same-machine\n"
         << "  --local-emulation  Enable discovery emulation bridge in worker\n"
+        << "  --ug2-beacon-emu  Enable synthetic UG2 LAN beacon broadcaster\n"
+        << "  --beacon-only   Run synthetic UG2 beacon broadcaster without loading server.dll\n"
         << "  --u2-mode N     Underground 2 StartServer mode (0..13)\n"
         << "  --diag-lan      Enable deep LAN discovery diagnostics\n";
 }
@@ -1476,6 +1686,15 @@ bool ParseWorkerLaunchOptions(int argc, char* argv[], WorkerLaunchOptions* optio
         else if (arg == "--local-emulation" || arg == "--network-emulation")
         {
             options.localEmulation = true;
+        }
+        else if (arg == "--ug2-beacon-emu")
+        {
+            options.ug2BeaconEmulation = true;
+        }
+        else if (arg == "--beacon-only")
+        {
+            options.beaconOnly = true;
+            options.ug2BeaconEmulation = true;
         }
         else if (arg == "--u2-mode")
         {
@@ -1550,6 +1769,11 @@ bool ApplyServerConfigCompatibility(
         || IsTruthy(GetConfigValue(configText, "LOCAL_NET_EMULATION").value_or("0"));
     resolved.localEmulation = options.localEmulation || localEmulationFromConfig;
     resolved.sameMachineMode = resolved.sameMachineMode || resolved.localEmulation;
+    const bool beaconEmulationFromConfig =
+        IsTruthy(GetConfigValue(configText, "UG2_BEACON_EMULATION").value_or("0"))
+        || IsTruthy(GetConfigValue(configText, "BEACON_EMULATION").value_or("0"));
+    resolved.ug2BeaconEmulation =
+        underground2Server && (options.ug2BeaconEmulation || options.beaconOnly || beaconEmulationFromConfig || resolved.sameMachineMode);
 
     bool changed = false;
     std::cout << "NFSLAN: Detected server profile: " << (underground2Server ? "Underground 2" : "Most Wanted") << '\n';
@@ -1609,6 +1833,14 @@ bool ApplyServerConfigCompatibility(
         std::cout << "NFSLAN: LOCAL_EMULATION=1 enabled.\n";
     }
 
+    if (underground2Server && resolved.ug2BeaconEmulation
+        && !IsTruthy(GetConfigValue(configText, "UG2_BEACON_EMULATION").value_or("0")))
+    {
+        configText = UpsertConfigValue(configText, "UG2_BEACON_EMULATION", "1");
+        changed = true;
+        std::cout << "NFSLAN: UG2_BEACON_EMULATION=1 enabled.\n";
+    }
+
     if (resolved.lanDiag && !IsTruthy(GetConfigValue(configText, "LAN_DIAG").value_or("0")))
     {
         configText = UpsertConfigValue(configText, "LAN_DIAG", "1");
@@ -1652,6 +1884,11 @@ bool ApplyServerConfigCompatibility(
     }
 
     std::cout << "NFSLAN: Effective LAN diagnostics: " << (resolved.lanDiag ? "enabled" : "disabled") << '\n';
+    if (underground2Server)
+    {
+        std::cout << "NFSLAN: Effective UG2 beacon emulation: "
+                  << (resolved.ug2BeaconEmulation ? "enabled" : "disabled") << '\n';
+    }
 
     if (!underground2Server)
     {
@@ -1844,6 +2081,10 @@ bool ApplyServerConfigCompatibility(
     {
         std::cout << "NFSLAN: NOTE - UG2 client filters self-discovered LAN servers in speed2.exe. "
                      "Use NFSLAN-U2-Patcher when running host and client on the same machine.\n";
+        if (resolved.ug2BeaconEmulation)
+        {
+            std::cout << "NFSLAN: NOTE - UG2 synthetic beacon emulator is active (visibility-first fallback mode).\n";
+        }
     }
 
     if (changed)
@@ -2191,6 +2432,7 @@ bool bIsUnderground2Server(uintptr_t base)
 void SigInterruptHandler(int signum)
 {
     StopLanDiscoveryLoopbackBridge();
+    StopUg2BeaconEmulator();
     if (IsServerRunning && StopServer && IsServerRunning())
     {
         std::cout << "NFSLAN: Stopping server...\n";
@@ -2236,39 +2478,56 @@ int NFSLANWorkerMain(int argc, char* argv[])
         std::cout << "NFSLAN: Deep LAN diagnostics requested from CLI.\n";
     }
 
-    if (!std::filesystem::exists("server.dll"))
+    StartServer = nullptr;
+    IsServerRunning = nullptr;
+    StopServer = nullptr;
+
+    const bool beaconOnlyMode = options.beaconOnly;
+    HMODULE serverdll = nullptr;
+    bool underground2Server = true;
+
+    if (beaconOnlyMode)
     {
-        std::cerr << "ERROR: server.dll not found! Please place the server.dll from the game in this executable's path!\n";
-        return -1;
+        std::cout << "NFSLAN: Beacon-only mode enabled (server.dll not required).\n";
+        std::cout << "NFSLAN: Beacon-only currently targets Underground 2 LAN discovery format.\n";
+    }
+    else
+    {
+        if (!std::filesystem::exists("server.dll"))
+        {
+            std::cerr << "ERROR: server.dll not found! Please place the server.dll from the game in this executable's path!\n";
+            return -1;
+        }
+
+        serverdll = LoadLibraryA("server");
+        if (!serverdll)
+        {
+            std::cerr << "ERROR: server.dll failed to load!\n";
+            return -1;
+        }
+
+        StartServer = (bool(*)(char*, int32_t, void*, void*))GetProcAddress(serverdll, "StartServer");
+        if (!StartServer)
+        {
+            std::cerr << "ERROR: could not find function StartServer inside server.dll!\n";
+            return -1;
+        }
+        IsServerRunning = (bool(*)())GetProcAddress(serverdll, "IsServerRunning");
+        if (!IsServerRunning)
+        {
+            std::cerr << "ERROR: could not find function IsServerRunning inside server.dll!\n";
+            return -1;
+        }
+        StopServer = (void(*)())GetProcAddress(serverdll, "StopServer");
+        if (!StopServer)
+        {
+            std::cerr << "ERROR: could not find function StopServer inside server.dll!\n";
+            return -1;
+        }
+
+        underground2Server = bIsUnderground2Server((uintptr_t)serverdll);
     }
 
-    HMODULE serverdll = LoadLibraryA("server");
-    if (!serverdll)
-    {
-        std::cerr << "ERROR: server.dll failed to load!\n";
-        return -1;
-    }
-
-    StartServer = (bool(*)(char*, int32_t, void*, void*))GetProcAddress(serverdll, "StartServer");
-    if (!StartServer)
-    {
-        std::cerr << "ERROR: could not find function StartServer inside server.dll!\n";
-        return -1;
-    }
-    IsServerRunning = (bool(*)())GetProcAddress(serverdll, "IsServerRunning");
-    if (!IsServerRunning)
-    {
-        std::cerr << "ERROR: could not find function IsServerRunning inside server.dll!\n";
-        return -1;
-    }
-    StopServer = (void(*)())GetProcAddress(serverdll, "StopServer");
-    if (!StopServer)
-    {
-        std::cerr << "ERROR: could not find function StopServer inside server.dll!\n";
-        return -1;
-    }
-
-    const bool underground2Server = bIsUnderground2Server((uintptr_t)serverdll);
     WorkerResolvedSettings resolved{};
     bool sendToHookInstalled = false;
     ScopedServerIdentityLock identityLock;
@@ -2305,7 +2564,7 @@ int NFSLANWorkerMain(int argc, char* argv[])
     gLanDiagEnabled.store(resolved.lanDiag);
     gLanDiagBeaconLogCount.store(0);
 
-    if (underground2Server)
+    if (!beaconOnlyMode && underground2Server)
     {
         sendToHookInstalled = InstallSendToHook(serverdll);
         if (!sendToHookInstalled)
@@ -2314,7 +2573,7 @@ int NFSLANWorkerMain(int argc, char* argv[])
         }
     }
 
-    if (!bDisablePatching)
+    if (!beaconOnlyMode && !bDisablePatching)
     {
         std::cout << "NFSLAN: Patching the server to work on any network...\n";
 
@@ -2327,22 +2586,44 @@ int NFSLANWorkerMain(int argc, char* argv[])
     signal(SIGINT, SigInterruptHandler);
     signal(SIGTERM, SigInterruptHandler);
 
-    const int startMode = underground2Server ? resolved.u2Mode : 0;
-    if (!StartServer(options.serverName.data(), startMode, nullptr, nullptr))
+    if (!beaconOnlyMode)
     {
-        std::cerr << "ERROR: could not launch server! StartServer returned false!\n";
-        return -1;
-    }
+        const int startMode = underground2Server ? resolved.u2Mode : 0;
+        if (!StartServer(options.serverName.data(), startMode, nullptr, nullptr))
+        {
+            std::cerr << "ERROR: could not launch server! StartServer returned false!\n";
+            return -1;
+        }
 
-    if (!IsServerRunning())
-    {
-        std::cerr << "ERROR: could not launch server! StartServer returned true but IsServerRunning returned false!\n";
-        return -1;
+        if (!IsServerRunning())
+        {
+            std::cerr << "ERROR: could not launch server! StartServer returned true but IsServerRunning returned false!\n";
+            return -1;
+        }
     }
 
     if (resolved.sameMachineMode || resolved.localEmulation)
     {
         LogLanDiscoveryPortDiagnostic(resolved.discoveryPort);
+    }
+
+    if (underground2Server && resolved.ug2BeaconEmulation)
+    {
+        StartUg2BeaconEmulator(true, identityLobby, options.serverName, identityPort);
+    }
+
+    if (beaconOnlyMode)
+    {
+        if (!gUg2BeaconEmuRunning.load())
+        {
+            std::cerr << "ERROR: Beacon-only mode requested but UG2 beacon emulator failed to start.\n";
+            return -1;
+        }
+
+        std::cout << "NFSLAN: Beacon-only mode running. Synthetic UG2 LAN beacon is being broadcast.\n";
+        std::cout << "NFSLAN: To stop, send CTRL+C to the console.\n";
+        while (gUg2BeaconEmuRunning.load()) { Sleep(100); }
+        return 0;
     }
 
     const bool useLanBridge =
@@ -2361,6 +2642,7 @@ int NFSLANWorkerMain(int argc, char* argv[])
     std::cout << "NFSLAN: Server started. To stop gracefully, send CTRL+C to the console\n";
     while (IsServerRunning()) { Sleep(1); }
     StopLanDiscoveryLoopbackBridge();
+    StopUg2BeaconEmulator();
     gSameMachineModeEnabled.store(false);
     gLocalEmulationEnabled.store(false);
     if (IsServerRunning())

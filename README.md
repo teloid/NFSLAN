@@ -26,6 +26,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 - Worker now auto-fills missing `LOBBY_IDENT`/`LOBBY` defaults (`NFSU2NA` for UG2, `NFSMWNA` for MW) and can run a same-machine LAN discovery loopback bridge on UDP `9999`
 - Worker supports `LOCAL_EMULATION`/`--local-emulation` with configurable discovery probe endpoint (`DISCOVERY_ADDR`/`DISCOVERY_PORT`)
 - Worker supports `--u2-mode` and `--diag-lan` for UG2 mode control and deep LAN packet diagnostics
+- Worker now supports UG2 synthetic beacon fallback (`UG2_BEACON_EMULATION=1`, `--ug2-beacon-emu`) and beacon-only discovery mode (`--beacon-only`)
 - Worker enforces the same server identity lock; UG2 beacon handling now stays close to stock server behavior (mirror/diagnostics without forced beacon rewrites)
 
 ## Important platform reality
@@ -49,6 +50,9 @@ Native Linux loading of this `server.dll` is not available in this project becau
 3. Open `NFSLAN-GUI`, choose game profile, set server name/path, and start.
 4. If needed for cross-subnet discovery, click `Relay tool` in the same app to open embedded `NFSLAN-Relay` mode (`--relay-ui`).
 5. If host and client run on the same PC (UG2), run `NFSLAN-U2-Patcher.exe`, then enable `FORCE_LOCAL` and (optionally) `LOCAL_EMULATION`.
+6. If server still does not appear in UG2 list, enable synthetic beacon fallback:
+   - normal mode: set `UG2_BEACON_EMULATION=1` or pass `--ug2-beacon-emu`
+   - discovery-only test: run worker with `--beacon-only` to broadcast a visible LAN beacon without loading `server.dll`
 6. On Linux/macOS, install a Windows compatibility runtime and run the Windows build via Proton/Wine, or use the Qt launcher path.
 
 ## Documentation

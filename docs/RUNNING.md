@@ -24,6 +24,7 @@ Do not run server directly from your game installation folder; use a separate se
 6. Configure compatibility flags:
    - `FORCE_LOCAL`: enable when hosting and playing from the same machine (UI also switches `ADDR` to `127.0.0.1`)
    - `LOCAL_EMULATION`: enables worker-side LAN discovery emulation bridge (`--local-emulation`)
+   - `UG2_BEACON_EMULATION`: enables UG2 synthetic beacon fallback (visibility-first diagnostics)
    - `DISCOVERY_ADDR`/`DISCOVERY_PORT`: emulation probe endpoint (`DISCOVERY_PORT` defaults to `9999`; empty `DISCOVERY_ADDR` auto-detects local IPv4, fallback `127.0.0.1`)
    - `ENABLE_GAME_ADDR_FIXUPS`: keep enabled (recommended for mixed local/public address setups)
    - `LAN_DIAG`: optional deep LAN discovery diagnostics (verbose packet-level logs)
@@ -46,6 +47,8 @@ Do not run server directly from your game installation folder; use a separate se
 - Console worker also supports `--same-machine` (`--local-host` alias) to force same-PC compatibility values in `server.cfg`.
 - Console worker options:
   - `--local-emulation`: enable local LAN discovery emulation bridge (same effect as `LOCAL_EMULATION=1`)
+  - `--ug2-beacon-emu`: enable UG2 synthetic beacon broadcaster in normal worker mode
+  - `--beacon-only`: run synthetic UG2 beacon broadcaster without loading `server.dll` (discovery visibility test mode)
   - `--u2-mode <0..13>`: sets UG2 StartServer mode and writes `U2_START_MODE`.
   - `--diag-lan`: enables deep LAN diagnostics (same as `LAN_DIAG=1`).
 - Worker applies profile-specific config normalization:
@@ -75,6 +78,8 @@ If the host also runs the game client on the same Windows machine:
 - If local client still cannot find/join, test a non-default `PORT` instead of `9900` to avoid client/server UDP bind conflicts in some patch sets.
 - For Underground 2 specifically, run `NFSLAN-U2-Patcher.exe` while the game is running.  
   The client (`speed2.exe`) has a self-discovery filter that can hide standalone servers on the same PC even when beacon packets look correct.
+- If UG2 still does not show server entries, enable synthetic beacon fallback (`UG2_BEACON_EMULATION=1` or `--ug2-beacon-emu`).
+- For pure discovery testing independent of `server.dll`, use `--beacon-only` mode.
 
 ## Preflight validation
 

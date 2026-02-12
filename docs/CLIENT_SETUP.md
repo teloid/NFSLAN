@@ -43,10 +43,12 @@ If the server host also runs the game client on the same PC:
 1. Enable `FORCE_LOCAL=1` in `server.cfg` (or via native GUI `Same-machine mode`, which also sets `ADDR=127.0.0.1`).
 2. Keep `ENABLE_GAME_ADDR_FIXUPS=1`.
 3. For Underground 2, run `NFSLAN-U2-Patcher.exe` while playing/hosting on the same machine.
-4. If client still cannot join, test a server `PORT` other than `9900`.
-5. Start the server with `--same-machine` when using console worker directly.
-6. In `--same-machine` mode, worker enables a local LAN discovery loopback bridge on UDP `9999`.
-7. For deeper packet troubleshooting, launch with `--diag-lan` (or set `LAN_DIAG=1`).
+4. If UG2 server list is still empty, enable synthetic beacon fallback (`UG2_BEACON_EMULATION=1` or worker `--ug2-beacon-emu`).
+5. For discovery-only verification without `server.dll`, run worker with `--beacon-only`.
+6. If client still cannot join, test a server `PORT` other than `9900`.
+7. Start the server with `--same-machine` when using console worker directly.
+8. In `--same-machine` mode, worker enables a local LAN discovery loopback bridge on UDP `9999`.
+9. For deeper packet troubleshooting, launch with `--diag-lan` (or set `LAN_DIAG=1`).
 
 ## Game-specific notes
 
