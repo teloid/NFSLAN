@@ -12,6 +12,7 @@ This repository version is AI-enhanced and focused on one goal:
 
 - U2-first launcher flow (native Win32 UI).
 - UG2 Bundle mode: starts worker + launches U2 patcher together.
+- Live `Events` + `Raw logs` panes in UI for runtime monitoring.
 - Manual `Start` / `Stop` kept for direct worker control.
 - Simplified UI and docs for fast setup.
 
@@ -39,7 +40,6 @@ In your selected server directory:
 
 - `server.dll` (Underground 2 server DLL)
 - `server.cfg`
-- optional but recommended: valid game report file (`gamefile.bin` or compatible `gameplay.bin`)
 
 ## Build (Windows 11)
 

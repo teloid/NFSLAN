@@ -15,8 +15,10 @@
 #include <iphlpapi.h>
 #include <windows.h>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <uxtheme.h>
 
 #include <algorithm>
 #include <chrono>
@@ -39,7 +41,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-u2-focused-2";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-win11-events-1";
 
 enum ControlId : int
 {
@@ -57,6 +59,7 @@ enum ControlId : int
     kIdStartU2SamePc,
     kIdStop,
     kIdConfigEditor,
+    kIdEventsView,
     kIdLogView
 };
 
@@ -69,7 +72,9 @@ struct AppState
     HWND portEdit = nullptr;
     HWND addrEdit = nullptr;
     HWND u2StartModeEdit = nullptr;
+    HWND statusValueLabel = nullptr;
     HWND configEditor = nullptr;
+    HWND eventsView = nullptr;
     HWND logView = nullptr;
     HWND runtimeSummaryLabel = nullptr;
     HWND startButton = nullptr;
@@ -84,8 +89,12 @@ struct AppState
     HANDLE logReaderThread = nullptr;
 
     bool running = false;
+    HFONT uiFont = nullptr;
+    HFONT titleFont = nullptr;
+    HFONT monoFont = nullptr;
     std::wstring exePath;
     std::wstring pendingLogLine;
+    std::wstring lastEventLine;
 };
 
 AppState g_app;
@@ -381,6 +390,117 @@ void appendRawToEdit(HWND edit, const std::wstring& value)
     SendMessageW(edit, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(value.c_str()));
 }
 
+std::wstring toLowerCopy(const std::wstring& input)
+{
+    std::wstring out = input;
+    std::transform(
+        out.begin(),
+        out.end(),
+        out.begin(),
+        [](wchar_t ch)
+        {
+            return static_cast<wchar_t>(towlower(ch));
+        });
+    return out;
+}
+
+bool containsToken(const std::wstring& lowercaseHaystack, const wchar_t* lowercaseNeedle)
+{
+    return lowercaseHaystack.find(lowercaseNeedle) != std::wstring::npos;
+}
+
+bool shouldSuppressNoiseLogLine(const std::wstring& line)
+{
+    const std::wstring lowered = toLowerCopy(line);
+    return containsToken(lowered, L"gamefile.bin")
+        || containsToken(lowered, L"gameplay.bin")
+        || containsToken(lowered, L"cannot get point totals")
+        || containsToken(lowered, L"invalid ranked race mode")
+        || containsToken(lowered, L"game report file");
+}
+
+std::wstring nowTimestamp();
+
+void appendEventLine(const std::wstring& line)
+{
+    if (!g_app.eventsView)
+    {
+        return;
+    }
+
+    if (toLowerCopy(trim(line)) == toLowerCopy(trim(g_app.lastEventLine)))
+    {
+        return;
+    }
+
+    g_app.lastEventLine = line;
+    const std::wstring entry = L"[" + nowTimestamp() + L"] " + line + L"\r\n";
+    appendRawToEdit(g_app.eventsView, entry);
+}
+
+bool tryBuildEventLine(const std::wstring& line, std::wstring* eventOut)
+{
+    if (!eventOut)
+    {
+        return false;
+    }
+
+    const std::wstring trimmedLine = trim(line);
+    if (trimmedLine.empty())
+    {
+        return false;
+    }
+
+    const std::wstring lowered = toLowerCopy(trimmedLine);
+
+    if (containsToken(lowered, L"server started")
+        || containsToken(lowered, L"server ready for")
+        || containsToken(lowered, L"master server is setup")
+        || containsToken(lowered, L"server is setup"))
+    {
+        *eventOut = L"SERVER: " + trimmedLine;
+        return true;
+    }
+
+    if (containsToken(lowered, L"worker exited")
+        || containsToken(lowered, L"stopping server")
+        || containsToken(lowered, L"server not running anymore"))
+    {
+        *eventOut = L"LIFECYCLE: " + trimmedLine;
+        return true;
+    }
+
+    if (containsToken(lowered, L"connect from")
+        || containsToken(lowered, L"connected")
+        || containsToken(lowered, L"joined")
+        || containsToken(lowered, L"authorization")
+        || containsToken(lowered, L"login"))
+    {
+        *eventOut = L"CONNECTION: " + trimmedLine;
+        return true;
+    }
+
+    if (containsToken(lowered, L"race")
+        && (containsToken(lowered, L"start")
+            || containsToken(lowered, L"started")
+            || containsToken(lowered, L"finish")
+            || containsToken(lowered, L"end")))
+    {
+        *eventOut = L"RACE: " + trimmedLine;
+        return true;
+    }
+
+    if (containsToken(lowered, L"error")
+        || containsToken(lowered, L"warning")
+        || containsToken(lowered, L"failed"))
+    {
+        *eventOut = L"ALERT: " + trimmedLine;
+        return true;
+    }
+
+    return false;
+}
+
 std::wstring nowTimestamp()
 {
     SYSTEMTIME st{};
@@ -407,8 +527,19 @@ void appendLogLine(const std::wstring& line)
         return;
     }
 
+    if (shouldSuppressNoiseLogLine(line))
+    {
+        return;
+    }
+
     const std::wstring entry = L"[" + nowTimestamp() + L"] " + line + L"\r\n";
     appendRawToEdit(g_app.logView, entry);
+
+    std::wstring eventLine;
+    if (tryBuildEventLine(line, &eventLine))
+    {
+        appendEventLine(eventLine);
+    }
 }
 
 void flushPendingLog()
@@ -1026,26 +1157,6 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
         warnings.push_back(L"CADDR/CPORT are ignored in this U2-only launcher.");
     }
 
-    const std::wstring gamefile = trim(getConfigValue(configText, L"GAMEFILE"));
-    if (!gamefile.empty())
-    {
-        std::filesystem::path gamefilePath = std::filesystem::path(gamefile);
-        if (!gamefilePath.is_absolute())
-        {
-            gamefilePath = serverDir / gamefilePath;
-        }
-
-        std::error_code ec;
-        if (!std::filesystem::exists(gamefilePath, ec))
-        {
-            warnings.push_back(L"GAMEFILE '" + gamefile + L"' does not exist in server directory.");
-        }
-    }
-    else
-    {
-        warnings.push_back(L"GAMEFILE is not set; worker will try gamefile.bin/gameplay.bin automatically.");
-    }
-
     if (port > 0 && !lobbyIdent.empty())
     {
         if (isServerIdentityLockedLocally(lobbyIdent, port))
@@ -1122,6 +1233,11 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
 void setUiRunningState(bool running)
 {
     g_app.running = running;
+
+    if (g_app.statusValueLabel)
+    {
+        setWindowTextString(g_app.statusValueLabel, running ? L"Running" : L"Stopped");
+    }
 
     EnableWindow(g_app.startButton, running ? FALSE : TRUE);
     EnableWindow(g_app.stopButton, running ? TRUE : FALSE);
@@ -1785,14 +1901,107 @@ void loadSettings()
     refreshRuntimeSummaryLabel();
 }
 
-void createLabel(HWND parent, const wchar_t* text, int x, int y, int width, int height)
+HFONT createUiFont(int pointSize, int weight, const wchar_t* faceName)
 {
-    CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE, x, y, width, height, parent, nullptr, nullptr, nullptr);
+    HDC hdc = GetDC(nullptr);
+    const int dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 96;
+    if (hdc)
+    {
+        ReleaseDC(nullptr, hdc);
+    }
+
+    const int height = -MulDiv(pointSize, dpi, 72);
+    return CreateFontW(
+        height,
+        0,
+        0,
+        0,
+        weight,
+        FALSE,
+        FALSE,
+        FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        faceName);
+}
+
+void ensureUiFonts()
+{
+    if (!g_app.uiFont)
+    {
+        g_app.uiFont = createUiFont(10, FW_NORMAL, L"Segoe UI");
+    }
+    if (!g_app.titleFont)
+    {
+        g_app.titleFont = createUiFont(14, FW_SEMIBOLD, L"Segoe UI Semibold");
+    }
+    if (!g_app.monoFont)
+    {
+        g_app.monoFont = createUiFont(10, FW_NORMAL, L"Cascadia Mono");
+    }
+    if (!g_app.monoFont)
+    {
+        g_app.monoFont = createUiFont(10, FW_NORMAL, L"Consolas");
+    }
 }
 
 void applyDefaultFontToWindow(HWND window)
 {
-    SendMessageW(window, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+    if (!window)
+    {
+        return;
+    }
+
+    ensureUiFonts();
+    const HFONT font = g_app.uiFont ? g_app.uiFont : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    SendMessageW(window, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    SetWindowTheme(window, L"Explorer", nullptr);
+}
+
+void applyTitleFontToWindow(HWND window)
+{
+    if (!window)
+    {
+        return;
+    }
+
+    ensureUiFonts();
+    const HFONT font = g_app.titleFont ? g_app.titleFont : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    SendMessageW(window, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+}
+
+void applyMonospaceFontToWindow(HWND window)
+{
+    if (!window)
+    {
+        return;
+    }
+
+    ensureUiFonts();
+    const HFONT font = g_app.monoFont ? g_app.monoFont : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    SendMessageW(window, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    SetWindowTheme(window, L"Explorer", nullptr);
+}
+
+void createLabel(HWND parent, const wchar_t* text, int x, int y, int width, int height)
+{
+    HWND label = CreateWindowExW(
+        0,
+        L"STATIC",
+        text,
+        WS_CHILD | WS_VISIBLE,
+        x,
+        y,
+        width,
+        height,
+        parent,
+        nullptr,
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(label);
 }
 
 void createUi(HWND window)
@@ -1812,7 +2021,7 @@ void createUi(HWND window)
     HWND title = CreateWindowExW(
         0,
         L"STATIC",
-        L"NFSLAN U2 Server Bundle",
+        L"NFSLAN U2 Server Manager",
         WS_CHILD | WS_VISIBLE,
         left,
         y,
@@ -1822,7 +2031,7 @@ void createUi(HWND window)
         nullptr,
         nullptr,
         nullptr);
-    applyDefaultFontToWindow(title);
+    applyTitleFontToWindow(title);
 
     HWND subtitle = CreateWindowExW(
         0,
@@ -1839,7 +2048,23 @@ void createUi(HWND window)
         nullptr);
     applyDefaultFontToWindow(subtitle);
 
-    y += 48;
+    createLabel(window, L"Status", left + 690, y + 4, 48, rowHeight);
+    g_app.statusValueLabel = CreateWindowExW(
+        0,
+        L"STATIC",
+        L"Stopped",
+        WS_CHILD | WS_VISIBLE,
+        left + 744,
+        y + 4,
+        140,
+        rowHeight,
+        window,
+        nullptr,
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.statusValueLabel);
+
+    y += 52;
 
     createLabel(window, L"Server name", left, y + 4, labelWidth, rowHeight);
     g_app.serverNameEdit = CreateWindowExW(
@@ -2092,11 +2317,31 @@ void createUi(HWND window)
         reinterpret_cast<HMENU>(kIdConfigEditor),
         nullptr,
         nullptr);
-    applyDefaultFontToWindow(g_app.configEditor);
+    applyMonospaceFontToWindow(g_app.configEditor);
 
     y += 220 + rowGap;
 
-    createLabel(window, L"Logs", left, y + 4, labelWidth, rowHeight);
+    createLabel(window, L"Live events", left, y + 4, labelWidth, rowHeight);
+    y += rowHeight;
+
+    g_app.eventsView = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        L"EDIT",
+        L"",
+        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
+        left,
+        y,
+        980,
+        120,
+        window,
+        reinterpret_cast<HMENU>(kIdEventsView),
+        nullptr,
+        nullptr);
+    applyMonospaceFontToWindow(g_app.eventsView);
+
+    y += 120 + rowGap;
+
+    createLabel(window, L"Raw logs", left, y + 4, labelWidth, rowHeight);
     y += rowHeight;
 
     g_app.logView = CreateWindowExW(
@@ -2107,12 +2352,12 @@ void createUi(HWND window)
         left,
         y,
         980,
-        265,
+        132,
         window,
         reinterpret_cast<HMENU>(kIdLogView),
         nullptr,
         nullptr);
-    applyDefaultFontToWindow(g_app.logView);
+    applyMonospaceFontToWindow(g_app.logView);
 
     setUiRunningState(false);
 }
@@ -2238,6 +2483,21 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
 
     case WM_DESTROY:
+        if (g_app.uiFont)
+        {
+            DeleteObject(g_app.uiFont);
+            g_app.uiFont = nullptr;
+        }
+        if (g_app.titleFont)
+        {
+            DeleteObject(g_app.titleFont);
+            g_app.titleFont = nullptr;
+        }
+        if (g_app.monoFont)
+        {
+            DeleteObject(g_app.monoFont);
+            g_app.monoFont = nullptr;
+        }
         PostQuitMessage(0);
         return 0;
 
@@ -2310,6 +2570,11 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
 #endif
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    INITCOMMONCONTROLSEX commonControls{};
+    commonControls.dwSize = sizeof(commonControls);
+    commonControls.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES;
+    InitCommonControlsEx(&commonControls);
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);

@@ -17,9 +17,11 @@ if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
 
     target_link_libraries(nfslan-native-gui PRIVATE
         comdlg32
+        comctl32
         shell32
         ws2_32
         iphlpapi
+        uxtheme
     )
 
     if(NFSLAN_NATIVE_WIN32_CAN_EMBED)

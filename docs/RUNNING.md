@@ -12,6 +12,9 @@ This launches:
 
 - standalone worker server process
 - U2 patcher for same-PC server visibility/join
+- live UI panes:
+  - `Live events` (connection/race/lifecycle extraction)
+  - `Raw logs` (full worker stream with repetitive game-report noise filtered)
 
 ## Manual fallback
 
@@ -34,7 +37,6 @@ The launcher enforces U2 protocol IDs and writes compatibility values before sta
 
 - `server.dll` (U2)
 - `server.cfg`
-- optional game report file (`gamefile.bin` or compatible `gameplay.bin`)
 
 ## Common startup checks
 

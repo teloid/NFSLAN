@@ -75,10 +75,8 @@ struct WorkerResolvedSettings
     std::string discoveryAddr = "127.0.0.1";
 };
 
-constexpr uint16_t kGameReportIdent = 0x9A3E;
-constexpr uint16_t kGameReportVersion = 2;
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-12-worker-u2-only-4";
+constexpr const char* kBuildTag = "2026-02-12-worker-u2-only-5";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -488,94 +486,6 @@ void ForceConfigValue(std::string* configText, const std::string& key, const std
     {
         std::cout << "NFSLAN: Updated " << key << "=" << value << " (was " << existing << ")\n";
     }
-}
-
-bool TryReadGameReportFileHeader(const std::filesystem::path& path, uint16_t* identOut, uint16_t* versionOut)
-{
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-    {
-        return false;
-    }
-
-    std::array<unsigned char, 4> header{};
-    file.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
-    if (file.gcount() != static_cast<std::streamsize>(header.size()))
-    {
-        return false;
-    }
-
-    *identOut = static_cast<uint16_t>(header[0] | (static_cast<uint16_t>(header[1]) << 8));
-    *versionOut = static_cast<uint16_t>(header[2] | (static_cast<uint16_t>(header[3]) << 8));
-    return true;
-}
-
-std::string FormatGameReportHeader(uint16_t ident, uint16_t version)
-{
-    std::ostringstream stream;
-    stream << "ident=0x" << std::hex << std::uppercase << ident << std::dec << " version=" << version;
-    return stream.str();
-}
-
-bool IsCompatibleGameReportFile(const std::filesystem::path& path, std::string* detailsOut)
-{
-    uint16_t ident = 0;
-    uint16_t version = 0;
-    if (!TryReadGameReportFileHeader(path, &ident, &version))
-    {
-        if (detailsOut)
-        {
-            *detailsOut = "unable to read header";
-        }
-        return false;
-    }
-
-    if (detailsOut)
-    {
-        *detailsOut = FormatGameReportHeader(ident, version);
-    }
-
-    return ident == kGameReportIdent && version == kGameReportVersion;
-}
-
-std::optional<std::string> ResolveCompatibleGameReportFile(const std::string& configuredGamefile)
-{
-    std::vector<std::string> candidates;
-    if (!configuredGamefile.empty())
-    {
-        candidates.push_back(configuredGamefile);
-    }
-
-    for (const std::string& fallback : { std::string("gamefile.bin"), std::string("gameplay.bin") })
-    {
-        if (std::find(candidates.begin(), candidates.end(), fallback) == candidates.end())
-        {
-            candidates.push_back(fallback);
-        }
-    }
-
-    for (const std::string& candidate : candidates)
-    {
-        if (!std::filesystem::exists(std::filesystem::path(candidate)))
-        {
-            continue;
-        }
-
-        std::string details;
-        if (IsCompatibleGameReportFile(candidate, &details))
-        {
-            return candidate;
-        }
-
-        if (candidate == configuredGamefile)
-        {
-            std::cout << "NFSLAN: GAMEFILE '" << candidate << "' is incompatible (" << details
-                      << "), expected " << FormatGameReportHeader(kGameReportIdent, kGameReportVersion)
-                      << ".\n";
-        }
-    }
-
-    return std::nullopt;
 }
 
 bool IsAsciiPrintable(char c)
@@ -2090,36 +2000,6 @@ bool ApplyServerConfigCompatibility(
     {
         std::cout << "NFSLAN: Effective MW endpoints: A=" << cfg("AADDR") << ":" << cfg("APORT")
                   << " C=" << cfg("CADDR") << ":" << cfg("CPORT") << '\n';
-    }
-
-    const auto configuredGamefileEntry = GetConfigValue(configText, "GAMEFILE");
-    std::string configuredGamefile = TrimAscii(configuredGamefileEntry.value_or("gamefile.bin"));
-    if (configuredGamefile.empty())
-    {
-        configuredGamefile = "gamefile.bin";
-    }
-
-    const auto compatibleGamefile = ResolveCompatibleGameReportFile(configuredGamefile);
-    if (compatibleGamefile.has_value())
-    {
-        if (!configuredGamefileEntry.has_value() || !EqualsIgnoreCase(configuredGamefile, *compatibleGamefile))
-        {
-            configText = UpsertConfigValue(configText, "GAMEFILE", *compatibleGamefile);
-            changed = true;
-            std::cout << "NFSLAN: Using GAMEFILE=" << *compatibleGamefile << '\n';
-        }
-    }
-    else if (!std::filesystem::exists(std::filesystem::path(configuredGamefile)))
-    {
-        std::cout << "NFSLAN: WARNING - GAMEFILE '" << configuredGamefile
-                  << "' not found. Missing game report data may cause tier/points/race-mode issues.\n";
-    }
-    else
-    {
-        std::string details;
-        IsCompatibleGameReportFile(configuredGamefile, &details);
-        std::cout << "NFSLAN: WARNING - GAMEFILE '" << configuredGamefile << "' is incompatible (" << details
-                  << "), expected " << FormatGameReportHeader(kGameReportIdent, kGameReportVersion) << ".\n";
     }
 
     if (addrValue == "0.0.0.0")
