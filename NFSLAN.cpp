@@ -78,7 +78,7 @@ struct WorkerResolvedSettings
 constexpr uint16_t kGameReportIdent = 0x9A3E;
 constexpr uint16_t kGameReportVersion = 2;
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-12-worker-clean-path-2";
+constexpr const char* kBuildTag = "2026-02-12-worker-clean-path-3";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -1839,6 +1839,12 @@ bool ApplyServerConfigCompatibility(
     std::string addrValue = EnsureConfigValue(&configText, "ADDR", "0.0.0.0", &changed);
     std::string ug2EndpointAddrValue = addrValue;
 
+    // Keep essential services enabled even for minimal server.cfg files.
+    EnsureConfigValue(&configText, "ACCOUNT", "1", &changed);
+    EnsureConfigValue(&configText, "MASTER", "1", &changed);
+    EnsureConfigValue(&configText, "SLAVE", "1", &changed);
+    EnsureConfigValue(&configText, "REDIR", "1", &changed);
+
     if (underground2Server)
     {
         const std::string trimmedAddr = TrimAscii(addrValue);
@@ -2510,6 +2516,10 @@ void SigInterruptHandler(int signum)
 
 int NFSLANWorkerMain(int argc, char* argv[])
 {
+    std::ios::sync_with_stdio(true);
+    std::cout.setf(std::ios::unitbuf);
+    std::cerr.setf(std::ios::unitbuf);
+
     std::cout << "NFS LAN Server Launcher\n";
     std::cout << "NFSLAN: Build tag " << kBuildTag << '\n';
 

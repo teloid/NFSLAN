@@ -23,7 +23,7 @@
 namespace
 {
 
-constexpr wchar_t kBuildTag[] = L"2026-02-12-u2-force-visible-3";
+constexpr wchar_t kBuildTag[] = L"2026-02-12-u2-force-visible-4";
 
 // Decompiled U2 speed2.exe globals/offsets (base image 0x00400000):
 // DAT_008b7e28 -> LAN discovery manager singleton pointer.
@@ -557,16 +557,18 @@ bool injectSyntheticLanEntry(
 
         std::uint32_t addrA = 0;
         std::uint32_t addrB = 0;
+        std::uint32_t ready = 0;
         readRemote(process, candidate + kLanEntryAddrAOffset, &addrA);
         readRemote(process, candidate + kLanEntryAddrBOffset, &addrB);
+        readRemote(process, candidate + kLanEntryReadyOffset, &ready);
 
-        if (!selected)
+        if (!selected && (ready != 0 || addrA != 0 || addrB != 0))
         {
             selected = true;
             selectedIndex = i;
             if (selectedAddrA == 0)
             {
-                selectedAddrA = addrA;
+                selectedAddrA = (addrA != 0) ? addrA : ready;
             }
             if (selectedAddrB == 0)
             {
@@ -582,7 +584,7 @@ bool injectSyntheticLanEntry(
             selectedIndex = i;
             if (selectedAddrA == 0)
             {
-                selectedAddrA = addrA;
+                selectedAddrA = (addrA != 0) ? addrA : ready;
             }
             if (selectedAddrB == 0)
             {
@@ -603,6 +605,17 @@ bool injectSyntheticLanEntry(
             writeRemote(process, realU2Entry + kLanEntrySelfFlagOffset, zero);
         }
 
+        if (injectedOut)
+        {
+            *injectedOut = 0;
+        }
+        return true;
+    }
+
+    // Do not synthesize from an uninitialized slot. That can create entries that
+    // are visible in UI but do not represent a connectable host.
+    if (!selected)
+    {
         if (injectedOut)
         {
             *injectedOut = 0;
@@ -649,8 +662,8 @@ bool injectSyntheticLanEntry(
     std::array<std::uint8_t, 16> fakeSockAddr{};
     fakeSockAddr[0] = 0x02; // AF_INET little-endian
     fakeSockAddr[1] = 0x00;
-    fakeSockAddr[2] = 0x27; // port 9999 big-endian
-    fakeSockAddr[3] = 0x0F;
+    fakeSockAddr[2] = static_cast<std::uint8_t>((clampedPort >> 8) & 0xFF); // port big-endian
+    fakeSockAddr[3] = static_cast<std::uint8_t>(clampedPort & 0xFF);
     fakeSockAddr[4] = static_cast<std::uint8_t>((addrA >> 24) & 0xFF);
     fakeSockAddr[5] = static_cast<std::uint8_t>((addrA >> 16) & 0xFF);
     fakeSockAddr[6] = static_cast<std::uint8_t>((addrA >> 8) & 0xFF);

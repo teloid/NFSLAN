@@ -989,6 +989,25 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
     std::vector<std::wstring> errors;
     std::vector<std::wstring> warnings;
 
+    const std::filesystem::path serverDllPath = serverDir / "server.dll";
+    if (std::filesystem::exists(serverDllPath))
+    {
+        const ServerDllFlavor flavor = detectServerDllFlavor(serverDllPath);
+        if (profile == kGameProfileUnderground2 && flavor == ServerDllFlavor::MostWanted)
+        {
+            errors.push_back(L"Selected profile is Underground 2 but server.dll looks like Most Wanted.");
+        }
+        else if (profile == kGameProfileMostWanted && flavor == ServerDllFlavor::Underground2)
+        {
+            errors.push_back(L"Selected profile is Most Wanted but server.dll looks like Underground 2.");
+        }
+        else if (flavor == ServerDllFlavor::Unknown)
+        {
+            warnings.push_back(
+                L"Could not confidently identify server.dll profile from binary markers; verify DLL matches selected game.");
+        }
+    }
+
     int port = 0;
     if (!tryParseIntRange(getConfigValue(configText, L"PORT"), 1, 65535, &port))
     {
@@ -1203,6 +1222,36 @@ bool writeTextFile(const std::filesystem::path& path, const std::wstring& text)
     const std::string bytes = toUtf8(text);
     file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     return file.good();
+}
+
+enum class ServerDllFlavor
+{
+    Unknown,
+    Underground2,
+    MostWanted
+};
+
+ServerDllFlavor detectServerDllFlavor(const std::filesystem::path& dllPath)
+{
+    std::ifstream file(dllPath, std::ios::binary);
+    if (!file)
+    {
+        return ServerDllFlavor::Unknown;
+    }
+
+    std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    const bool hasU2 = (bytes.find("NFSU2NA") != std::string::npos);
+    const bool hasMw = (bytes.find("NFSMWNA") != std::string::npos);
+
+    if (hasU2 && !hasMw)
+    {
+        return ServerDllFlavor::Underground2;
+    }
+    if (hasMw && !hasU2)
+    {
+        return ServerDllFlavor::MostWanted;
+    }
+    return ServerDllFlavor::Unknown;
 }
 
 void syncFieldsFromConfigEditor()
