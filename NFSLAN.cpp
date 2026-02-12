@@ -1951,17 +1951,30 @@ bool ApplyServerConfigCompatibility(
                   << (resolved.ug2BeaconEmulation ? "enabled" : "disabled") << '\n';
     }
 
+    const auto currentFixups = GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS");
+    if (!currentFixups.has_value())
+    {
+        configText = UpsertConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS", "1");
+        changed = true;
+        std::cout << "NFSLAN: Added ENABLE_GAME_ADDR_FIXUPS=1 (recommended).\n";
+    }
+
+    const bool enableAddrFixups = IsTruthy(GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS").value_or("0"));
+
+    if (underground2Server && enableAddrFixups)
+    {
+        ForceConfigValue(&configText, "MADDR", addrValue, &changed);
+        ForceConfigValue(&configText, "RADDR", addrValue, &changed);
+        ForceConfigValue(&configText, "AADDR", addrValue, &changed);
+        ForceConfigValue(&configText, "MPORT", portValue, &changed);
+        ForceConfigValue(&configText, "RPORT", portValue, &changed);
+        ForceConfigValue(&configText, "APORT", portValue, &changed);
+        std::cout << "NFSLAN: ENABLE_GAME_ADDR_FIXUPS=1 -> UG2 endpoints aligned with ADDR/PORT.\n";
+    }
+
     if (!underground2Server)
     {
-        const auto currentFixups = GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS");
-        if (!currentFixups.has_value())
-        {
-            configText = UpsertConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS", "1");
-            changed = true;
-            std::cout << "NFSLAN: Added ENABLE_GAME_ADDR_FIXUPS=1 (recommended for MW).\n";
-        }
-
-        if (resolved.sameMachineMode && !IsTruthy(GetConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS").value_or("0")))
+        if (resolved.sameMachineMode && !enableAddrFixups)
         {
             configText = UpsertConfigValue(configText, "ENABLE_GAME_ADDR_FIXUPS", "1");
             changed = true;

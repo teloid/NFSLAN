@@ -36,7 +36,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-clean-path-1";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-clean-path-2";
 constexpr int kGameProfileMostWanted = 0;
 constexpr int kGameProfileUnderground2 = 1;
 
@@ -1728,7 +1728,7 @@ bool launchU2PatcherForGame(
         + std::to_wstring(injectPort)
         + L", ip="
         + injectIp
-        + L", stats='port|1').");
+        + L", fallback stats='port|0').");
     return true;
 }
 

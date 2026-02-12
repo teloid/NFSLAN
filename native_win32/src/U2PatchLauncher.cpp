@@ -23,7 +23,7 @@
 namespace
 {
 
-constexpr wchar_t kBuildTag[] = L"2026-02-12-u2-force-visible-1";
+constexpr wchar_t kBuildTag[] = L"2026-02-12-u2-force-visible-2";
 
 // Decompiled U2 speed2.exe globals/offsets (base image 0x00400000):
 // DAT_008b7e28 -> LAN discovery manager singleton pointer.
@@ -533,6 +533,8 @@ bool injectSyntheticLanEntry(
     std::uint32_t selectedAddrA = preferredAddrA;
     std::uint32_t selectedAddrB = preferredAddrB;
     bool selected = false;
+    bool hasRealU2Entry = false;
+    std::uintptr_t realU2Entry = 0;
 
     for (std::uint32_t i = 0; i < entryCount; ++i)
     {
@@ -574,6 +576,8 @@ bool injectSyntheticLanEntry(
 
         if (std::memcmp(ident.data(), "NFSU2NA", 7) == 0)
         {
+            hasRealU2Entry = true;
+            realU2Entry = candidate;
             selected = true;
             selectedIndex = i;
             if (selectedAddrA == 0)
@@ -588,6 +592,24 @@ bool injectSyntheticLanEntry(
         }
     }
 
+    // Keep discovered rows untouched. If the game already has a U2 row, avoid rewriting
+    // unknown fields that are needed for stable join behavior.
+    if (hasRealU2Entry)
+    {
+        std::uint32_t selfFlag = 0;
+        if (readRemote(process, realU2Entry + kLanEntrySelfFlagOffset, &selfFlag) && selfFlag != 0)
+        {
+            const std::uint32_t zero = 0;
+            writeRemote(process, realU2Entry + kLanEntrySelfFlagOffset, zero);
+        }
+
+        if (injectedOut)
+        {
+            *injectedOut = 0;
+        }
+        return true;
+    }
+
     const std::uintptr_t entry = static_cast<std::uintptr_t>(entriesStart) + selectedIndex * kLanEntryStride;
 
     const std::array<std::uint8_t, 4> header = {{'g', 'E', 'A', 0x03}};
@@ -599,7 +621,8 @@ bool injectSyntheticLanEntry(
     const std::string ident = "NFSU2NA";
     const std::string name = injectedName.empty() ? "NAME" : injectedName;
     const int clampedPort = (std::max)(1, (std::min)(65535, injectedPort));
-    const std::string stats = std::to_string(clampedPort) + "|1";
+    // Match stock-like dedicated-server beacon formatting.
+    const std::string stats = std::to_string(clampedPort) + "|0";
     const std::string transport = "TCP:~1:1024\tUDP:~1:1024";
 
     if (!writeRemoteZeroedString(process, entry + kLanEntryIdentOffset, 8, ident)
@@ -613,8 +636,7 @@ bool injectSyntheticLanEntry(
     const std::uint32_t expiry = GetTickCount() + 30000;
     const std::uint32_t loopbackNetworkOrder = 0x7F000001; // 127.0.0.1 in network-order integer form
     const std::uint32_t addrA = selectedAddrA != 0 ? selectedAddrA : loopbackNetworkOrder;
-    // For synthetic rows, keep addrB zero so UG2 client takes explicit addrA connect path.
-    const std::uint32_t addrB = 0;
+    const std::uint32_t addrB = selectedAddrB != 0 ? selectedAddrB : addrA;
     const std::uint32_t selfFlag = 0;
     if (!writeRemote(process, entry + kLanEntryExpiryOffset, expiry)
         || !writeRemote(process, entry + kLanEntryAddrAOffset, addrA)
@@ -849,15 +871,15 @@ int wmain(int argc, wchar_t* argv[])
 
     logLine(L"Game resumed. Self-filter patch loop is active.");
     logLine(L"Patch offsets: manager=+0x4B7E28 entryStride=0x1A4 active=+0x28 ready=+0x194 self=+0x19C.");
-    logLine(L"Force-visible mode: synthetic LAN entry injection is enabled.");
+    logLine(L"Force-visible mode: self-filter patching is active; synthetic row injection is fallback-only.");
     logLine(
         L"Injection target: name='"
         + std::wstring(injectNameAscii.begin(), injectNameAscii.end())
         + L"' stats='"
         + std::to_wstring(injectPort)
-        + L"|1' addr="
+        + L"|0' addr="
         + (injectAddrOverride.has_value() ? formatIpv4StoredOrder(*injectAddrOverride) : L"<auto>")
-        + L" (addrB=0 direct-connect)"
+        + L" (fallback synthetic row only)"
         + L".");
 
     std::uint64_t totalCleared = 0;
