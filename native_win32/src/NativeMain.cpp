@@ -19,6 +19,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <uxtheme.h>
+#include <dwmapi.h>
 
 #include <algorithm>
 #include <chrono>

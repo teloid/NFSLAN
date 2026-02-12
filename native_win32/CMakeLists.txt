@@ -18,6 +18,7 @@ if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
     target_link_libraries(nfslan-native-gui PRIVATE
         comdlg32
         comctl32
+        dwmapi
         shell32
         ws2_32
         iphlpapi
