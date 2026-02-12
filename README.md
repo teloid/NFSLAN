@@ -75,18 +75,22 @@ Outputs:
 - `docs/U2_PATCHER.md` - patcher behavior and diagnostics
 
 ## Tested on the following pirated releases (EXE pacth specifically)
+
  - NFSU2 (US version 1.2 MagiPack Repack)
+```
 FileName       : SPEED2.EXE
 FullPath       : C:\Program Files (x86)\Need for Speed - Underground 2\SPEED2.EXE
 Size_MB        : 4,58
 Size_Bytes     : 4800512
 Date_Modified  : 09.03.2005 0:37:24
 SHA256         : F9DD86C054878CE6276BEB07C1FD61874F7A1E4BF1F241B084C65B73E24168A7
+```
 
  - MFSMV (version 1.3 Black Edition)
-FileName       : speed.exe
+```FileName       : speed.exe
 FullPath       : C:\Program Files (x86)\EA GAMES\Need for Speed Most Wanted\speed.exe
 Size_MB        : 5,75
 Size_Bytes     : 6029312
 Date_Modified  : 25.11.2023 16:12:09
 SHA256         : 80774C2E5D619B4F120B48D4462896FD504C263399D203A238769CFFDE1D253C
+```
