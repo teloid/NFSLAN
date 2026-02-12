@@ -38,7 +38,8 @@ Do not run server directly from your game installation folder; use a separate se
    - worker launch mode
    - selected profile
    - effective server directory and `server.cfg` path
-10. For Underground 2 same-machine play, open `U2 patcher` from GUI and keep it running with the game.
+10. For Underground 2 same-machine play, set `U2 game EXE` and click `UG2 Same-PC`.
+    - This one-click flow enforces same-machine config, starts worker, and launches patcher with matching injected server name/port/IP.
 
 ## Worker mode behavior
 
@@ -77,7 +78,7 @@ If the host also runs the game client on the same Windows machine:
 - Keep `ENABLE_GAME_ADDR_FIXUPS=1`.
 - Use `--same-machine` from worker/GUI so local bind/address keys are forced to loopback.
 - If local client still cannot find/join, test a non-default `PORT` instead of `9900` to avoid client/server UDP bind conflicts in some patch sets.
-- For Underground 2 specifically, run `NFSLAN-U2-Patcher.exe` while the game is running.  
+- For Underground 2 specifically, use `UG2 Same-PC` button in native UI (or run `NFSLAN-U2-Patcher.exe` manually) while the game is running.
   The client (`speed2.exe`) has a self-discovery filter that can hide standalone servers on the same PC even when beacon packets look correct.
 - If UG2 still does not show server entries, enable synthetic beacon fallback (`UG2_BEACON_EMULATION=1` or `--ug2-beacon-emu`).
 - For pure discovery testing independent of `server.dll`, use `--beacon-only` mode.

@@ -15,6 +15,7 @@ Legacy worker behavior and reverse-engineered server limitations still apply.
 - Native Win32 relay app includes beacon capture/diff workflow (in-game sample vs standalone sample) with detailed report export
 - Relay capture path includes UDP bind + raw fallback sniff mode when `9999` is already occupied (admin recommended)
 - Native Win32 launcher includes explicit `FORCE_LOCAL`, `LOCAL_EMULATION`, and `ENABLE_GAME_ADDR_FIXUPS` toggles for same-machine host+client scenarios
+- Native Win32 launcher includes `UG2 Same-PC` one-click bundle (start worker + launch patcher with synchronized name/port/IP injection)
 - Native Win32 launcher includes `Beacon only` button for UG2 discovery-only visibility testing
 - Native Win32 launcher includes `U2_START_MODE` (`0..13`) and `LAN_DIAG` controls with profile-aware preflight validation before launch
 - Native Win32 launcher preflight now blocks local port conflicts (`UDP 9999`, service UDP/TCP `PORT`) and duplicate server identity (`LOBBY_IDENT` + `PORT`)
@@ -50,7 +51,7 @@ Native Linux loading of this `server.dll` is not available in this project becau
 2. Place game `server.dll` and `server.cfg` in a server folder.
 3. Open `NFSLAN-GUI`, choose game profile, set server name/path, and start.
 4. If needed for cross-subnet discovery, click `Relay tool` in the same app to open embedded `NFSLAN-Relay` mode (`--relay-ui`).
-5. If host and client run on the same PC (UG2), run `NFSLAN-U2-Patcher.exe`, then enable `FORCE_LOCAL` and (optionally) `LOCAL_EMULATION`.
+5. If host and client run on the same PC (UG2), use `UG2 Same-PC` button in native UI (it enforces local flags, starts worker, and launches patcher with matching injected endpoint).
 6. If server still does not appear in UG2 list, enable synthetic beacon fallback:
    - normal mode: set `UG2_BEACON_EMULATION=1` or pass `--ug2-beacon-emu`
    - discovery-only test: run worker with `--beacon-only` to broadcast a visible LAN beacon without loading `server.dll`

@@ -35,7 +35,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-11-native-ui-u2patcher-1";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-u2bundle-1";
 constexpr int kGameProfileMostWanted = 0;
 constexpr int kGameProfileUnderground2 = 1;
 
@@ -47,6 +47,8 @@ enum ControlId : int
     kIdBrowseServerDir,
     kIdWorkerPath,
     kIdBrowseWorker,
+    kIdU2GameExe,
+    kIdBrowseU2GameExe,
     kIdPort,
     kIdAddr,
     kIdU2StartMode,
@@ -58,6 +60,7 @@ enum ControlId : int
     kIdLoadConfig,
     kIdSaveConfig,
     kIdStart,
+    kIdStartU2SamePc,
     kIdStartBeaconOnly,
     kIdStop,
     kIdOpenRelay,
@@ -73,6 +76,7 @@ struct AppState
     HWND serverNameEdit = nullptr;
     HWND serverDirEdit = nullptr;
     HWND workerPathEdit = nullptr;
+    HWND u2GameExeEdit = nullptr;
     HWND portEdit = nullptr;
     HWND addrEdit = nullptr;
     HWND u2StartModeEdit = nullptr;
@@ -85,10 +89,12 @@ struct AppState
     HWND logView = nullptr;
     HWND runtimeSummaryLabel = nullptr;
     HWND startButton = nullptr;
+    HWND startU2SamePcButton = nullptr;
     HWND startBeaconOnlyButton = nullptr;
     HWND stopButton = nullptr;
     HWND openRelayButton = nullptr;
     HWND openU2PatcherButton = nullptr;
+    HWND browseU2GameExeButton = nullptr;
 
     HANDLE processHandle = nullptr;
     HANDLE processThread = nullptr;
@@ -103,6 +109,12 @@ struct AppState
 };
 
 AppState g_app;
+
+bool launchU2PatcherForGame(
+    const std::filesystem::path& gameExePath,
+    const std::wstring& injectName,
+    int injectPort,
+    const std::wstring& injectIp);
 
 std::wstring trim(const std::wstring& input)
 {
@@ -788,8 +800,27 @@ void refreshProfileSpecificControls()
     }
 
     const bool isU2Profile = (currentGameProfileIndex() == kGameProfileUnderground2);
-    const BOOL modeEnabled = (!g_app.running && isU2Profile) ? TRUE : FALSE;
-    EnableWindow(g_app.u2StartModeEdit, modeEnabled);
+    const BOOL editableWhenIdle = (!g_app.running && isU2Profile) ? TRUE : FALSE;
+    const BOOL launchWhenIdle = (!g_app.running && isU2Profile) ? TRUE : FALSE;
+    const BOOL launchAnyU2State = isU2Profile ? TRUE : FALSE;
+
+    EnableWindow(g_app.u2StartModeEdit, editableWhenIdle);
+    if (g_app.u2GameExeEdit)
+    {
+        EnableWindow(g_app.u2GameExeEdit, editableWhenIdle);
+    }
+    if (g_app.browseU2GameExeButton)
+    {
+        EnableWindow(g_app.browseU2GameExeButton, editableWhenIdle);
+    }
+    if (g_app.startU2SamePcButton)
+    {
+        EnableWindow(g_app.startU2SamePcButton, launchWhenIdle);
+    }
+    if (g_app.openU2PatcherButton)
+    {
+        EnableWindow(g_app.openU2PatcherButton, launchAnyU2State);
+    }
 }
 
 bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std::wstring* blockingErrorOut)
@@ -1305,6 +1336,29 @@ std::wstring browseForWorkerExecutable(HWND owner)
     return std::wstring(filePath);
 }
 
+std::wstring browseForU2GameExecutable(HWND owner)
+{
+    wchar_t filePath[MAX_PATH] = {};
+
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    const wchar_t filter[] =
+        L"NFSU2 executable (speed2.exe)\0speed2.exe\0Executable files (*.exe)\0*.exe\0All files\0*.*\0";
+    ofn.lpstrFilter = filter;
+    ofn.lpstrFile = filePath;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    ofn.lpstrTitle = L"Select NFSU2 speed2.exe";
+
+    if (!GetOpenFileNameW(&ofn))
+    {
+        return L"";
+    }
+
+    return std::wstring(filePath);
+}
+
 void launchRelayUi()
 {
 #if defined(NFSLAN_NATIVE_EMBED_RELAY)
@@ -1348,6 +1402,35 @@ void launchRelayUi()
 
 void launchU2Patcher()
 {
+    if (currentGameProfileIndex() == kGameProfileUnderground2)
+    {
+        const std::filesystem::path gamePath = std::filesystem::path(trim(getWindowTextString(g_app.u2GameExeEdit)));
+        if (!gamePath.empty() && std::filesystem::exists(gamePath))
+        {
+            int injectPort = 9900;
+            const std::wstring portText = trim(getWindowTextString(g_app.portEdit));
+            if (!portText.empty())
+            {
+                tryParseIntRange(portText, 1, 65535, &injectPort);
+            }
+
+            std::wstring injectIp = trim(getWindowTextString(g_app.addrEdit));
+            if (injectIp.empty())
+            {
+                injectIp = L"127.0.0.1";
+            }
+
+            std::wstring injectName = trim(getWindowTextString(g_app.serverNameEdit));
+            if (injectName.empty())
+            {
+                injectName = L"NAME";
+            }
+
+            launchU2PatcherForGame(gamePath, injectName, injectPort, injectIp);
+            return;
+        }
+    }
+
     const std::filesystem::path patcherPath = exeDirectory() / "NFSLAN-U2-Patcher.exe";
     if (!std::filesystem::exists(patcherPath))
     {
@@ -1481,6 +1564,71 @@ std::wstring escapeForQuotedArg(const std::wstring& input)
     std::wstring escaped = input;
     std::replace(escaped.begin(), escaped.end(), L'"', L'\'');
     return escaped;
+}
+
+bool launchU2PatcherForGame(
+    const std::filesystem::path& gameExePath,
+    const std::wstring& injectName,
+    int injectPort,
+    const std::wstring& injectIp)
+{
+    const std::filesystem::path patcherPath = exeDirectory() / "NFSLAN-U2-Patcher.exe";
+    if (!std::filesystem::exists(patcherPath))
+    {
+        showError(
+            L"NFSLAN-U2-Patcher.exe was not found next to this launcher.\n"
+            L"Build/install the patcher target and place it in the same folder.");
+        return false;
+    }
+
+    std::wstring commandLine =
+        L"\"" + patcherPath.wstring() + L"\""
+        + L" --inject-name \"" + escapeForQuotedArg(injectName) + L"\""
+        + L" --inject-port " + std::to_wstring(injectPort)
+        + L" --inject-ip \"" + escapeForQuotedArg(injectIp) + L"\""
+        + L" \"" + escapeForQuotedArg(gameExePath.wstring()) + L"\"";
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+
+    commandLine.push_back(L'\0');
+    const BOOL created = CreateProcessW(
+        patcherPath.wstring().c_str(),
+        commandLine.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        0,
+        nullptr,
+        exeDirectory().wstring().c_str(),
+        &si,
+        &pi);
+    if (!created)
+    {
+        const DWORD errorCode = GetLastError();
+        const std::wstring errorDetails =
+            L"Failed to launch U2 patcher. Win32 error " + std::to_wstring(errorCode) + L": "
+            + formatWin32Error(errorCode);
+        appendLogLine(errorDetails);
+        showError(errorDetails);
+        return false;
+    }
+
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    appendLogLine(
+        L"Launched U2 patcher for game "
+        + gameExePath.wstring()
+        + L" (inject name='"
+        + injectName
+        + L"', port="
+        + std::to_wstring(injectPort)
+        + L", ip="
+        + injectIp
+        + L").");
+    return true;
 }
 
 DWORD WINAPI logReaderThreadProc(LPVOID)
@@ -1655,6 +1803,81 @@ void startWorker(bool beaconOnlyMode)
     appendLogLine(L"Server started");
 }
 
+void startU2SamePcBundle()
+{
+    if (currentGameProfileIndex() != kGameProfileUnderground2)
+    {
+        showError(L"UG2 Same-PC bundle is available only for Underground 2 profile.");
+        return;
+    }
+
+    std::filesystem::path gameExePath = std::filesystem::path(trim(getWindowTextString(g_app.u2GameExeEdit)));
+    if (gameExePath.empty() || !std::filesystem::exists(gameExePath))
+    {
+        const std::wstring selected = browseForU2GameExecutable(g_app.window);
+        if (selected.empty())
+        {
+            return;
+        }
+        setWindowTextString(g_app.u2GameExeEdit, selected);
+        gameExePath = std::filesystem::path(selected);
+    }
+
+    if (gameExePath.empty() || !std::filesystem::exists(gameExePath))
+    {
+        showError(L"Selected U2 game executable path is invalid.");
+        return;
+    }
+
+    SendMessageW(g_app.forceLocalCheck, BM_SETCHECK, BST_CHECKED, 0);
+    SendMessageW(g_app.localEmulationCheck, BM_SETCHECK, BST_CHECKED, 0);
+    SendMessageW(g_app.enableAddrFixupsCheck, BM_SETCHECK, BST_CHECKED, 0);
+    setWindowTextString(g_app.addrEdit, L"127.0.0.1");
+    applyFieldsToConfigEditor();
+    appendLogLine(L"UG2 Same-PC bundle: FORCE_LOCAL=1 LOCAL_EMULATION=1 ADDR=127.0.0.1 ENABLE_GAME_ADDR_FIXUPS=1.");
+
+    if (!g_app.running)
+    {
+        startWorker(false);
+        if (!g_app.running)
+        {
+            appendLogLine(L"UG2 Same-PC bundle aborted: worker failed to start.");
+            return;
+        }
+    }
+
+    int injectPort = 9900;
+    const std::wstring portText = trim(getWindowTextString(g_app.portEdit));
+    if (!portText.empty())
+    {
+        if (!tryParseIntRange(portText, 1, 65535, &injectPort))
+        {
+            showError(L"PORT must be in range 1..65535.");
+            return;
+        }
+    }
+
+    std::wstring injectIp = trim(getWindowTextString(g_app.addrEdit));
+    if (injectIp.empty())
+    {
+        injectIp = L"127.0.0.1";
+    }
+
+    std::wstring injectName = trim(getWindowTextString(g_app.serverNameEdit));
+    if (injectName.empty())
+    {
+        injectName = L"NAME";
+    }
+
+    if (!launchU2PatcherForGame(gameExePath, injectName, injectPort, injectIp))
+    {
+        appendLogLine(L"UG2 Same-PC bundle warning: server is running, but patcher launch failed.");
+        return;
+    }
+
+    appendLogLine(L"UG2 Same-PC bundle started: worker and patcher are active.");
+}
+
 void saveSettings()
 {
     const std::wstring path = settingsPath().wstring();
@@ -1662,6 +1885,7 @@ void saveSettings()
     WritePrivateProfileStringW(L"launcher", L"gameIndex", std::to_wstring(SendMessageW(g_app.gameCombo, CB_GETCURSEL, 0, 0)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"serverName", trim(getWindowTextString(g_app.serverNameEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"serverDir", trim(getWindowTextString(g_app.serverDirEdit)).c_str(), path.c_str());
+    WritePrivateProfileStringW(L"launcher", L"u2GameExe", trim(getWindowTextString(g_app.u2GameExeEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"port", trim(getWindowTextString(g_app.portEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"addr", trim(getWindowTextString(g_app.addrEdit)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"launcher", L"u2StartMode", trim(getWindowTextString(g_app.u2StartModeEdit)).c_str(), path.c_str());
@@ -1713,6 +1937,7 @@ void loadSettings()
 
     setWindowTextString(g_app.serverNameEdit, readIniValue(L"serverName", getWindowTextString(g_app.serverNameEdit)));
     setWindowTextString(g_app.serverDirEdit, readIniValue(L"serverDir", getWindowTextString(g_app.serverDirEdit)));
+    setWindowTextString(g_app.u2GameExeEdit, readIniValue(L"u2GameExe", getWindowTextString(g_app.u2GameExeEdit)));
     setWindowTextString(g_app.portEdit, readIniValue(L"port", L"9900"));
     setWindowTextString(g_app.addrEdit, readIniValue(L"addr", L"0.0.0.0"));
     setWindowTextString(g_app.u2StartModeEdit, readIniValue(L"u2StartMode", L"0"));
@@ -1927,6 +2152,39 @@ void createUi(HWND window)
 
     y += rowHeight + rowGap;
 
+    createLabel(window, L"U2 game EXE", left, y + 4, labelWidth, rowHeight);
+    g_app.u2GameExeEdit = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        L"EDIT",
+        L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        left + labelWidth,
+        y,
+        fieldWidth - buttonWidth - 8,
+        rowHeight,
+        window,
+        reinterpret_cast<HMENU>(kIdU2GameExe),
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.u2GameExeEdit);
+
+    g_app.browseU2GameExeButton = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"Browse...",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        left + labelWidth + fieldWidth - buttonWidth,
+        y,
+        buttonWidth,
+        rowHeight,
+        window,
+        reinterpret_cast<HMENU>(kIdBrowseU2GameExe),
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.browseU2GameExeButton);
+
+    y += rowHeight + rowGap;
+
     g_app.runtimeSummaryLabel = CreateWindowExW(
         0,
         L"STATIC",
@@ -2113,7 +2371,8 @@ void createUi(HWND window)
     const int beaconOnlyButtonX = left + 3 * (buttonWidth + 8);
     const int stopButtonX = beaconOnlyButtonX + (buttonWidth + 30) + 8;
     const int relayButtonX = stopButtonX + buttonWidth + 8;
-    const int patcherButtonX = relayButtonX + (buttonWidth + 30) + 8;
+    const int samePcButtonX = relayButtonX + (buttonWidth + 30) + 8;
+    const int patcherButtonX = samePcButtonX + (buttonWidth + 40) + 8;
 
     g_app.startButton = CreateWindowExW(
         0,
@@ -2174,6 +2433,21 @@ void createUi(HWND window)
         nullptr,
         nullptr);
     applyDefaultFontToWindow(g_app.openRelayButton);
+
+    g_app.startU2SamePcButton = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"UG2 Same-PC",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        samePcButtonX,
+        y,
+        buttonWidth + 40,
+        rowHeight,
+        window,
+        reinterpret_cast<HMENU>(kIdStartU2SamePc),
+        nullptr,
+        nullptr);
+    applyDefaultFontToWindow(g_app.startU2SamePcButton);
 
     g_app.openU2PatcherButton = CreateWindowExW(
         0,
@@ -2348,6 +2622,16 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
         return 0;
 #endif
 
+    case kIdBrowseU2GameExe:
+    {
+        const std::wstring selected = browseForU2GameExecutable(window);
+        if (!selected.empty())
+        {
+            setWindowTextString(g_app.u2GameExeEdit, selected);
+        }
+        return 0;
+    }
+
     case kIdLoadConfig:
         loadServerConfig(true);
         return 0;
@@ -2361,6 +2645,10 @@ LRESULT handleCommand(HWND window, WPARAM wParam)
 
     case kIdStart:
         startWorker(false);
+        return 0;
+
+    case kIdStartU2SamePc:
+        startU2SamePcBundle();
         return 0;
 
     case kIdStartBeaconOnly:
@@ -2558,7 +2846,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         1000,
-        910,
+        960,
         nullptr,
         nullptr,
         instance,

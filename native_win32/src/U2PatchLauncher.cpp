@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -55,6 +56,111 @@ struct PatchCycleInfo
     std::uint32_t sampleAddrA = 0;
     std::uint32_t sampleAddrB = 0;
 };
+
+std::wstring trim(const std::wstring& input);
+
+bool tryParseIntRange(const std::wstring& text, int minValue, int maxValue, int* valueOut)
+{
+    if (!valueOut)
+    {
+        return false;
+    }
+
+    const std::wstring trimmed = trim(text);
+    if (trimmed.empty())
+    {
+        return false;
+    }
+
+    wchar_t* end = nullptr;
+    const long value = wcstol(trimmed.c_str(), &end, 10);
+    if (!end || *end != L'\0')
+    {
+        return false;
+    }
+    if (value < minValue || value > maxValue)
+    {
+        return false;
+    }
+
+    *valueOut = static_cast<int>(value);
+    return true;
+}
+
+bool tryParseIpv4StoredOrder(const std::wstring& text, std::uint32_t* valueOut)
+{
+    if (!valueOut)
+    {
+        return false;
+    }
+
+    const std::wstring trimmed = trim(text);
+    if (trimmed.empty())
+    {
+        return false;
+    }
+
+    int a = -1;
+    int b = -1;
+    int c = -1;
+    int d = -1;
+    wchar_t trailing = 0;
+    const int readCount = swscanf_s(trimmed.c_str(), L"%d.%d.%d.%d%c", &a, &b, &c, &d, &trailing, 1);
+    if (readCount != 4)
+    {
+        return false;
+    }
+    if (a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255)
+    {
+        return false;
+    }
+
+    *valueOut =
+        static_cast<std::uint32_t>(a)
+        | (static_cast<std::uint32_t>(b) << 8)
+        | (static_cast<std::uint32_t>(c) << 16)
+        | (static_cast<std::uint32_t>(d) << 24);
+    return true;
+}
+
+std::wstring formatIpv4StoredOrder(std::uint32_t value)
+{
+    std::wstringstream stream;
+    stream << (value & 0xFF) << L"."
+           << ((value >> 8) & 0xFF) << L"."
+           << ((value >> 16) & 0xFF) << L"."
+           << ((value >> 24) & 0xFF);
+    return stream.str();
+}
+
+std::string sanitizeAscii(const std::wstring& text, size_t maxBytes)
+{
+    std::string output;
+    if (maxBytes == 0)
+    {
+        return output;
+    }
+
+    output.reserve((std::min)(maxBytes, text.size()));
+    for (wchar_t ch : text)
+    {
+        if (output.size() + 1 >= maxBytes)
+        {
+            break;
+        }
+
+        if (ch >= 32 && ch <= 126)
+        {
+            output.push_back(static_cast<char>(ch));
+        }
+        else
+        {
+            output.push_back('_');
+        }
+    }
+
+    return output;
+}
 
 std::wstring trim(const std::wstring& input)
 {
@@ -393,6 +499,8 @@ bool injectSyntheticLanEntry(
     std::uint32_t entryCount,
     std::uint32_t preferredAddrA,
     std::uint32_t preferredAddrB,
+    const std::string& injectedName,
+    int injectedPort,
     std::uint64_t* injectedOut)
 {
     if (!manager || entryCount == 0 || entryCount > kMaxReasonableEntries)
@@ -420,13 +528,66 @@ bool injectSyntheticLanEntry(
         return true;
     }
 
-    const std::uintptr_t entry = static_cast<std::uintptr_t>(entriesStart);
+    std::uint32_t selectedIndex = 0;
+    std::uint32_t selectedAddrA = preferredAddrA;
+    std::uint32_t selectedAddrB = preferredAddrB;
+    bool selected = false;
 
-    std::vector<std::uint8_t> zeroEntry(static_cast<size_t>(kLanEntryStride), 0);
-    if (!writeRemoteBytes(process, entry, zeroEntry.data(), static_cast<SIZE_T>(zeroEntry.size())))
+    for (std::uint32_t i = 0; i < entryCount; ++i)
     {
-        return false;
+        const std::uintptr_t candidate = static_cast<std::uintptr_t>(entriesStart) + i * kLanEntryStride;
+        std::uint8_t active = 0;
+        if (!readRemote(process, candidate + kLanEntryActiveOffset, &active))
+        {
+            continue;
+        }
+        if (active == 0)
+        {
+            continue;
+        }
+
+        std::array<char, 8> ident{};
+        if (!readRemote(process, candidate + kLanEntryIdentOffset, &ident))
+        {
+            continue;
+        }
+
+        std::uint32_t addrA = 0;
+        std::uint32_t addrB = 0;
+        readRemote(process, candidate + kLanEntryAddrAOffset, &addrA);
+        readRemote(process, candidate + kLanEntryAddrBOffset, &addrB);
+
+        if (!selected)
+        {
+            selected = true;
+            selectedIndex = i;
+            if (selectedAddrA == 0)
+            {
+                selectedAddrA = addrA;
+            }
+            if (selectedAddrB == 0)
+            {
+                selectedAddrB = addrB;
+            }
+        }
+
+        if (std::memcmp(ident.data(), "NFSU2NA", 7) == 0)
+        {
+            selected = true;
+            selectedIndex = i;
+            if (selectedAddrA == 0)
+            {
+                selectedAddrA = addrA;
+            }
+            if (selectedAddrB == 0)
+            {
+                selectedAddrB = addrB;
+            }
+            break;
+        }
     }
+
+    const std::uintptr_t entry = static_cast<std::uintptr_t>(entriesStart) + selectedIndex * kLanEntryStride;
 
     const std::array<std::uint8_t, 4> header = {{'g', 'E', 'A', 0x03}};
     if (!writeRemoteBytes(process, entry, header.data(), header.size()))
@@ -435,8 +596,9 @@ bool injectSyntheticLanEntry(
     }
 
     const std::string ident = "NFSU2NA";
-    const std::string name = "NAME";
-    const std::string stats = "9900|0";
+    const std::string name = injectedName.empty() ? "NAME" : injectedName;
+    const int clampedPort = (std::max)(1, (std::min)(65535, injectedPort));
+    const std::string stats = std::to_string(clampedPort) + "|0";
     const std::string transport = "TCP:~1:1024\tUDP:~1:1024";
 
     if (!writeRemoteZeroedString(process, entry + kLanEntryIdentOffset, 8, ident)
@@ -449,8 +611,8 @@ bool injectSyntheticLanEntry(
 
     const std::uint32_t expiry = GetTickCount() + 30000;
     const std::uint32_t loopbackNetworkOrder = 0x0100007F; // 127.0.0.1 bytes in memory
-    const std::uint32_t addrA = preferredAddrA != 0 ? preferredAddrA : loopbackNetworkOrder;
-    const std::uint32_t addrB = preferredAddrB != 0 ? preferredAddrB : addrA;
+    const std::uint32_t addrA = selectedAddrA != 0 ? selectedAddrA : loopbackNetworkOrder;
+    const std::uint32_t addrB = selectedAddrB != 0 ? selectedAddrB : addrA;
     const std::uint32_t selfFlag = 0;
     if (!writeRemote(process, entry + kLanEntryExpiryOffset, expiry)
         || !writeRemote(process, entry + kLanEntryAddrAOffset, addrA)
@@ -494,7 +656,12 @@ void printUsage()
         << L"NFSLAN U2 self-filter patch launcher\n"
         << L"Build tag: " << kBuildTag << L"\n\n"
         << L"Usage:\n"
-        << L"  NFSLAN-U2-Patcher.exe [path-to-speed2.exe] [game args...]\n\n"
+        << L"  NFSLAN-U2-Patcher.exe [options] [path-to-speed2.exe] [game args...]\n\n"
+        << L"Options:\n"
+        << L"  --inject-name <name>   Visible LAN row name (default: NAME)\n"
+        << L"  --inject-port <port>   Visible LAN row port in stats field (default: 9900)\n"
+        << L"  --inject-ip <ipv4>     Visible LAN row target IP (default: observed or 127.0.0.1)\n"
+        << L"  --                     Treat all following args as game args\n\n"
         << L"If no path is provided, a file picker opens.\n"
         << L"This launcher keeps running while the game runs.\n";
 }
@@ -503,28 +670,90 @@ void printUsage()
 
 int wmain(int argc, wchar_t* argv[])
 {
-    if (argc > 1)
+    std::wstring gameExe;
+    std::vector<std::wstring> gameArgs;
+    std::wstring injectName = L"NAME";
+    int injectPort = 9900;
+    std::optional<std::uint32_t> injectAddrOverride;
+    bool forceGameArgs = false;
+
+    for (int i = 1; i < argc; ++i)
     {
-        const std::wstring first = trim(argv[1]);
-        if (first == L"--help" || first == L"-h" || first == L"/?")
+        const std::wstring arg = trim(argv[i] ? argv[i] : L"");
+        if (arg.empty())
+        {
+            continue;
+        }
+
+        if (!forceGameArgs && (arg == L"--help" || arg == L"-h" || arg == L"/?"))
         {
             printUsage();
             return 0;
         }
-    }
 
-    std::wstring gameExe;
-    std::vector<std::wstring> gameArgs;
+        if (!forceGameArgs && arg == L"--")
+        {
+            forceGameArgs = true;
+            continue;
+        }
 
-    if (argc > 1 && argv[1] && argv[1][0] != L'-')
-    {
-        gameExe = argv[1];
-        for (int i = 2; i < argc; ++i)
+        if (!forceGameArgs && arg == L"--inject-name")
+        {
+            if (i + 1 >= argc)
+            {
+                logLine(L"Missing value for --inject-name.");
+                return 1;
+            }
+            injectName = argv[++i];
+            continue;
+        }
+
+        if (!forceGameArgs && arg == L"--inject-port")
+        {
+            if (i + 1 >= argc)
+            {
+                logLine(L"Missing value for --inject-port.");
+                return 1;
+            }
+            int parsedPort = 0;
+            if (!tryParseIntRange(argv[++i], 1, 65535, &parsedPort))
+            {
+                logLine(L"Invalid --inject-port value. Expected 1..65535.");
+                return 1;
+            }
+            injectPort = parsedPort;
+            continue;
+        }
+
+        if (!forceGameArgs && arg == L"--inject-ip")
+        {
+            if (i + 1 >= argc)
+            {
+                logLine(L"Missing value for --inject-ip.");
+                return 1;
+            }
+            std::uint32_t parsedIp = 0;
+            if (!tryParseIpv4StoredOrder(argv[++i], &parsedIp))
+            {
+                logLine(L"Invalid --inject-ip value. Expected IPv4 like 127.0.0.1.");
+                return 1;
+            }
+            injectAddrOverride = parsedIp;
+            continue;
+        }
+
+        if (gameExe.empty())
+        {
+            gameExe = arg;
+        }
+        else
         {
             gameArgs.emplace_back(argv[i]);
+            forceGameArgs = true;
         }
     }
-    else
+
+    if (gameExe.empty())
     {
         gameExe = browseForGameExe();
         if (gameExe.empty())
@@ -533,6 +762,8 @@ int wmain(int argc, wchar_t* argv[])
             return 1;
         }
     }
+
+    const std::string injectNameAscii = sanitizeAscii(injectName, 0x20);
 
     const std::filesystem::path gamePath = std::filesystem::path(trim(gameExe));
     if (gamePath.empty() || !std::filesystem::exists(gamePath))
@@ -617,6 +848,14 @@ int wmain(int argc, wchar_t* argv[])
     logLine(L"Game resumed. Self-filter patch loop is active.");
     logLine(L"Patch offsets: manager=+0x4B7E28 entryStride=0x1A4 active=+0x28 ready=+0x194 self=+0x19C.");
     logLine(L"Force-visible mode: synthetic LAN entry injection is enabled.");
+    logLine(
+        L"Injection target: name='"
+        + std::wstring(injectNameAscii.begin(), injectNameAscii.end())
+        + L"' stats='"
+        + std::to_wstring(injectPort)
+        + L"|0' addr="
+        + (injectAddrOverride.has_value() ? formatIpv4StoredOrder(*injectAddrOverride) : L"<auto>")
+        + L".");
 
     std::uint64_t totalCleared = 0;
     std::uint64_t totalInjected = 0;
@@ -676,8 +915,10 @@ int wmain(int argc, wchar_t* argv[])
                 pi.hProcess,
                 cycleInfo.manager,
                 cycleInfo.entryCount,
-                cycleInfo.sampleAddrA,
-                cycleInfo.sampleAddrB,
+                injectAddrOverride.value_or(cycleInfo.sampleAddrA),
+                injectAddrOverride.value_or(cycleInfo.sampleAddrB),
+                injectNameAscii,
+                injectPort,
                 &injectedThisCycle))
         {
             logLine(L"WriteProcessMemory failed while injecting synthetic LAN entry. Stopping patch loop.");
