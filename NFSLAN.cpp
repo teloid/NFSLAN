@@ -76,7 +76,7 @@ struct WorkerResolvedSettings
 };
 
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-13-worker-identprefix-mw-caddr-1";
+constexpr const char* kBuildTag = "2026-02-13-worker-mw-idown-detect-1";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -2425,6 +2425,18 @@ bool ModuleContainsAscii(uintptr_t base, const char* needle)
 
 bool bIsUnderground2Server(uintptr_t base)
 {
+    // Prefer protocol markers: they vary by build/region (suffix), but the prefix is stable.
+    const bool hasU2 = ModuleContainsAscii(base, "NFSU2");
+    const bool hasMw = ModuleContainsAscii(base, "NFSMW");
+    if (hasU2 && !hasMw)
+    {
+        return true;
+    }
+    if (hasMw && !hasU2)
+    {
+        return false;
+    }
+
     if (ModuleContainsAscii(base, "RPORT")
         && ModuleContainsAscii(base, "RADDR")
         && ModuleContainsAscii(base, "TRUST_MATCH"))
