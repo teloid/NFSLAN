@@ -48,7 +48,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-12-native-ui-win11-events-1";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-13-native-ui-identprefix-1";
 
 enum ControlId : int
 {
@@ -749,6 +749,36 @@ bool equalCaseInsensitive(const std::wstring& a, const std::wstring& b)
     return true;
 }
 
+bool startsWithCaseInsensitive(const std::wstring& value, const std::wstring& prefix)
+{
+    if (value.size() < prefix.size())
+    {
+        return false;
+    }
+
+    for (size_t i = 0; i < prefix.size(); ++i)
+    {
+        if (towlower(value[i]) != towlower(prefix[i]))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool lobbyIdentMatchesProfilePrefix(GameProfile profile, const std::wstring& lobbyIdentRaw)
+{
+    const std::wstring lobbyIdent = trim(lobbyIdentRaw);
+    if (lobbyIdent.empty())
+    {
+        return false;
+    }
+
+    const std::wstring expectedPrefix = (profile == GameProfile::MostWanted) ? L"NFSMW" : L"NFSU2";
+    return startsWithCaseInsensitive(lobbyIdent, expectedPrefix);
+}
+
 bool parseConfigLine(const std::wstring& line, std::wstring* keyOut, std::wstring* valueOut)
 {
     std::wstring working = line;
@@ -1280,6 +1310,7 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
     const GameProfile profile = selectedProfile();
     const std::wstring configText = getWindowTextString(g_app.configEditor);
     const std::wstring expectedLobby = expectedLobbyIdentForProfile(profile);
+    const std::wstring expectedLobbyPrefix = (profile == GameProfile::MostWanted) ? L"NFSMW" : L"NFSU2";
 
     std::vector<std::wstring> errors;
     std::vector<std::wstring> warnings;
@@ -1331,6 +1362,14 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
     if (!lobbyIdent.empty() && !lobby.empty() && !equalCaseInsensitive(lobbyIdent, lobby))
     {
         errors.push_back(L"LOBBY must match LOBBY_IDENT (protocol identifier).");
+    }
+
+    if (!lobbyIdent.empty() && !lobbyIdentMatchesProfilePrefix(profile, lobbyIdent))
+    {
+        errors.push_back(
+            L"LOBBY_IDENT must start with '" + expectedLobbyPrefix + L"' for "
+            + profileDisplayName(profile)
+            + L".");
     }
 
     // Protocol IDs vary by game build; warn but do not block on non-default values.
@@ -1535,7 +1574,7 @@ void applyFieldsToConfigEditor()
     // Do not force-override: game builds/regions use different IDs.
     std::wstring lobbyIdent = trim(getConfigValue(configText, L"LOBBY_IDENT"));
     std::wstring lobby = trim(getConfigValue(configText, L"LOBBY"));
-    if (lobbyIdent.empty())
+    if (lobbyIdent.empty() || !lobbyIdentMatchesProfilePrefix(profile, lobbyIdent))
     {
         lobbyIdent = expectedLobby;
         configText = upsertConfigValue(configText, L"LOBBY_IDENT", lobbyIdent);
@@ -1747,6 +1786,8 @@ bool launchProfilePatcherForGame(
         + L" --inject-ip \"" + escapeForQuotedArg(injectIp) + L"\""
         + L" --inject-ident \"" + escapeForQuotedArg(injectIdent) + L"\""
         + L" \"" + escapeForQuotedArg(gameExePath.wstring()) + L"\"";
+
+    appendLogLine(L"Patcher command: " + commandLine);
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -2064,7 +2105,7 @@ void startBundle()
     }
 
     std::wstring injectIdent = trim(getConfigValue(getWindowTextString(g_app.configEditor), L"LOBBY_IDENT"));
-    if (injectIdent.empty())
+    if (injectIdent.empty() || !lobbyIdentMatchesProfilePrefix(profile, injectIdent))
     {
         injectIdent = expectedLobbyIdentForProfile(profile);
     }

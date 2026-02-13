@@ -76,7 +76,7 @@ struct WorkerResolvedSettings
 };
 
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-13-worker-protoid-mw-endpoints-1";
+constexpr const char* kBuildTag = "2026-02-13-worker-identprefix-mw-caddr-1";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -130,6 +130,25 @@ bool EqualsIgnoreCase(const std::string& a, const std::string& b)
     for (size_t i = 0; i < a.size(); ++i)
     {
         if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i])))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool StartsWithIgnoreCase(const std::string& text, const std::string& prefix)
+{
+    if (text.size() < prefix.size())
+    {
+        return false;
+    }
+
+    for (size_t i = 0; i < prefix.size(); ++i)
+    {
+        if (std::tolower(static_cast<unsigned char>(text[i]))
+            != std::tolower(static_cast<unsigned char>(prefix[i])))
         {
             return false;
         }
@@ -1736,9 +1755,19 @@ bool ApplyServerConfigCompatibility(
     // LOBBY_IDENT/LOBBY are protocol IDs that must match the client build.
     // Default to NA values only when missing; do not force-override.
     const std::string lobbyIdentDefault = underground2Server ? "NFSU2NA" : "NFSMWNA";
+    const std::string lobbyIdentPrefix = underground2Server ? "NFSU2" : "NFSMW";
     std::string lobbyIdent = TrimAscii(GetConfigValue(configText, "LOBBY_IDENT").value_or(""));
     if (lobbyIdent.empty())
     {
+        ForceConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
+        lobbyIdent = lobbyIdentDefault;
+    }
+    else if (!StartsWithIgnoreCase(lobbyIdent, lobbyIdentPrefix))
+    {
+        std::cout << "NFSLAN: WARNING - LOBBY_IDENT='" << lobbyIdent
+                  << "' does not look like " << (underground2Server ? "Underground 2" : "Most Wanted")
+                  << " (expected prefix '" << lobbyIdentPrefix << "'). Forcing LOBBY_IDENT=" << lobbyIdentDefault
+                  << ".\n";
         ForceConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
         lobbyIdent = lobbyIdentDefault;
     }
@@ -1921,9 +1950,7 @@ bool ApplyServerConfigCompatibility(
         // MW clients can discover the server via UDP beacons but still fail to join if the
         // configured endpoints resolve to loopback/wildcard. Force concrete endpoint identity.
         ForceConfigValue(&configText, "AADDR", mwEndpointAddrValue, &changed);
-        ForceConfigValue(&configText, "CADDR", mwEndpointAddrValue, &changed);
         ForceConfigValue(&configText, "APORT", portValue, &changed);
-        ForceConfigValue(&configText, "CPORT", portValue, &changed);
         std::cout << "NFSLAN: MW endpoints aligned with resolved endpoint identity and PORT.\n";
     }
 
@@ -1940,14 +1967,21 @@ bool ApplyServerConfigCompatibility(
     }
     else
     {
-        // MW endpoints are force-aligned above; only backfill missing keys for compatibility.
-        for (const std::string& key : { std::string("APORT"), std::string("CPORT") })
+        // MW endpoints: AADDR/APORT are required. CADDR/CPORT appear optional and can
+        // enable extra services in some builds, so only normalize them if already present.
+        EnsureMirroredKey(&configText, "APORT", portValue, &changed);
+        EnsureMirroredKey(&configText, "AADDR", mwEndpointAddrValue, &changed);
+
+        const std::string existingCaddr = TrimAscii(GetConfigValue(configText, "CADDR").value_or(""));
+        if (!existingCaddr.empty())
         {
-            EnsureMirroredKey(&configText, key, portValue, &changed);
+            EnsureMirroredKey(&configText, "CADDR", mwEndpointAddrValue, &changed);
         }
-        for (const std::string& key : { std::string("AADDR"), std::string("CADDR") })
+
+        const std::string existingCport = TrimAscii(GetConfigValue(configText, "CPORT").value_or(""));
+        if (!existingCport.empty())
         {
-            EnsureMirroredKey(&configText, key, mwEndpointAddrValue, &changed);
+            EnsureMirroredKey(&configText, "CPORT", portValue, &changed);
         }
     }
 

@@ -17,6 +17,11 @@ Common IDs:
 - U2 (NA builds): `NFSU2NA`
 - MW (NA builds): `NFSMWNA`
 
+Notes:
+
+- `LOBBY_IDENT` must match the selected game (must start with `NFSU2` for Underground 2, `NFSMW` for Most Wanted).
+- The exact suffix can vary by build/region (for example `...NA`, `...EU`).
+
 If one platform/build cannot see the server (e.g., SteamOS vs Windows), capture `udp.port == 9999` on the client and look at the ASCII ID in the beacon payload (8-byte field). Use that value for `LOBBY_IDENT`/`LOBBY`.
 
 ## Same-PC host + client
