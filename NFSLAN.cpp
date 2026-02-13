@@ -78,7 +78,7 @@ struct WorkerResolvedSettings
 };
 
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-13-worker-mw-dirlen-1";
+constexpr const char* kBuildTag = "2026-02-13-worker-mw-dir-diag-1";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -100,6 +100,7 @@ SendToFn gOriginalSendTo = nullptr;
 std::atomic<bool> gSendToHookInstalled{ false };
 std::atomic<bool> gLanDiagEnabled{ false };
 std::atomic<int> gLanDiagBeaconLogCount{ 0 };
+std::atomic<int> gLanDiagMwDirLogCount{ 0 };
 std::atomic<bool> gSameMachineModeEnabled{ false };
 std::atomic<bool> gLocalEmulationEnabled{ false };
 std::atomic<int> gLanDiscoveryPort{ kDefaultLanDiscoveryPort };
@@ -823,6 +824,77 @@ int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const soc
         MirrorUg2BeaconToLoopback(s, buf, len, flags);
     }
 
+    if (gMwDirCompatEnabled.load())
+    {
+        const TitanMessageView view = ParseTitanMessageView(buf, len);
+        if (TitanCmdEqualsIgnoreCase(view, "@dir"))
+        {
+            const char* body = view.body;
+            const int bodyLen = view.bodyLen;
+            const bool hasIdown = ContainsSubstringIgnoreCase(body, bodyLen, "IDOWN=");
+            const bool hasLadr = ContainsSubstringIgnoreCase(body, bodyLen, "ladr=");
+            const bool hasLprt = ContainsSubstringIgnoreCase(body, bodyLen, "lprt=");
+
+            if (ShouldLogLanDiagSample(&gLanDiagMwDirLogCount, 80))
+            {
+                const std::string peer = DescribeSendToTarget(s, to, tolen);
+                std::cout << "NFSLAN: LAN-DIAG MW @dir outgoing (sendto) peer=" << (peer.empty() ? "?" : peer)
+                          << " len=" << len
+                          << " hadIdown=" << (hasIdown ? "1" : "0")
+                          << " hasLadr=" << (hasLadr ? "1" : "0")
+                          << " hasLprt=" << (hasLprt ? "1" : "0")
+                          << " body=" << PreviewAscii(body, bodyLen, 160) << '\n';
+            }
+
+            if (hasIdown || !hasLadr || !hasLprt)
+            {
+                const std::string addr = TrimAscii(gMwDirCompatAddr);
+                const int port = gMwDirCompatPort.load();
+                if (!addr.empty() && port > 0 && port <= 65535)
+                {
+                    std::string patchedBody;
+                    patchedBody.reserve(96);
+                    patchedBody += "ladr=";
+                    patchedBody += addr;
+                    patchedBody += "\n";
+                    patchedBody += "lprt=";
+                    patchedBody += std::to_string(port);
+                    patchedBody += "\n";
+
+                    const int maxBodyBytes = len - 12;
+                    const int maxCopyBytes = (std::max)(0, maxBodyBytes - 1);
+                    if (maxBodyBytes > 0 && maxCopyBytes > 0)
+                    {
+                        std::vector<char> out(static_cast<size_t>(len), 0);
+                        std::memcpy(out.data(), buf, 12);
+                        out[11] = static_cast<char>(len);
+                        const int copyBytes = (std::min)(static_cast<int>(patchedBody.size()), maxCopyBytes);
+                        if (copyBytes > 0)
+                        {
+                            std::memcpy(out.data() + 12, patchedBody.data(), static_cast<size_t>(copyBytes));
+                        }
+                        out[12 + copyBytes] = '\0';
+
+                        if (!gMwDirCompatAnnounced.exchange(true))
+                        {
+                            std::cout << "NFSLAN: Installed MW @dir compatibility response (forcing ladr/lprt to "
+                                      << addr << ":" << port << ").\n";
+                        }
+
+                        if (gLanDiagEnabled.load())
+                        {
+                            std::cout << "NFSLAN: LAN-DIAG MW @dir patched (api=sendto, len=" << len
+                                      << ", hadIdown=" << (hasIdown ? "1" : "0") << ").\n";
+                            std::cout << "NFSLAN: LAN-DIAG MW @dir patched-body: " << PreviewAscii(out.data() + 12, len - 12, 160) << '\n';
+                        }
+
+                        return gOriginalSendTo(s, out.data(), len, flags, to, tolen);
+                    }
+                }
+            }
+        }
+    }
+
     return gOriginalSendTo(s, buf, len, flags, to, tolen);
 }
 
@@ -861,7 +933,7 @@ bool InstallSendToHook(HMODULE moduleHandle)
         if (thunk->u1.Function == reinterpret_cast<ULONG_PTR>(&HookedSendTo))
         {
             gSendToHookInstalled.store(true);
-            std::cout << "NFSLAN: UG2 sendto hook already installed (" << sourceTag << ").\n";
+            std::cout << "NFSLAN: sendto hook already installed (" << sourceTag << ").\n";
             return true;
         }
 
@@ -880,7 +952,7 @@ bool InstallSendToHook(HMODULE moduleHandle)
         FlushInstructionCache(GetCurrentProcess(), &thunk->u1.Function, sizeof(thunk->u1.Function));
 
         gSendToHookInstalled.store(true);
-        std::cout << "NFSLAN: Installed UG2 sendto mirror hook (" << sourceTag << ").\n";
+        std::cout << "NFSLAN: Installed sendto hook (" << sourceTag << ").\n";
         return true;
     };
 
@@ -1012,6 +1084,86 @@ std::string PreviewAscii(const char* data, int dataLen, int maxChars)
     return out;
 }
 
+struct TitanMessageView
+{
+    bool valid = false;
+    char cmd[4] = { 0, 0, 0, 0 };
+    const char* body = nullptr;
+    int bodyLen = 0;
+};
+
+TitanMessageView ParseTitanMessageView(const char* buf, int len)
+{
+    TitanMessageView view{};
+    if (!buf || len < 12 || len > 0xFF)
+    {
+        return view;
+    }
+
+    if (buf[0] != '@' || buf[11] != static_cast<char>(len))
+    {
+        return view;
+    }
+
+    view.valid = true;
+    view.cmd[0] = buf[0];
+    view.cmd[1] = buf[1];
+    view.cmd[2] = buf[2];
+    view.cmd[3] = buf[3];
+    view.body = buf + 12;
+    view.bodyLen = len - 12;
+    return view;
+}
+
+bool TitanCmdEqualsIgnoreCase(const TitanMessageView& view, const char* cmd4)
+{
+    if (!view.valid || !cmd4)
+    {
+        return false;
+    }
+    for (int i = 0; i < 4; ++i)
+    {
+        if (std::tolower(static_cast<unsigned char>(view.cmd[i]))
+            != std::tolower(static_cast<unsigned char>(cmd4[i])))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string FormatIpv4Sockaddr(const sockaddr_in& addr)
+{
+    char ipBuf[64]{};
+    if (!InetNtopA(AF_INET, const_cast<in_addr*>(&addr.sin_addr), ipBuf, sizeof(ipBuf)))
+    {
+        const char* fallback = inet_ntoa(addr.sin_addr);
+        std::snprintf(ipBuf, sizeof(ipBuf), "%s", fallback ? fallback : "?");
+    }
+    return std::string(ipBuf) + ":" + std::to_string(static_cast<int>(ntohs(addr.sin_port)));
+}
+
+std::string DescribeSocketPeer(SOCKET s)
+{
+    sockaddr_in peer{};
+    int peerLen = sizeof(peer);
+    if (getpeername(s, reinterpret_cast<sockaddr*>(&peer), &peerLen) == 0 && peer.sin_family == AF_INET)
+    {
+        return FormatIpv4Sockaddr(peer);
+    }
+    return {};
+}
+
+std::string DescribeSendToTarget(SOCKET s, const sockaddr* to, int tolen)
+{
+    if (to && tolen >= static_cast<int>(sizeof(sockaddr_in)) && to->sa_family == AF_INET)
+    {
+        const auto* in = reinterpret_cast<const sockaddr_in*>(to);
+        return FormatIpv4Sockaddr(*in);
+    }
+    return DescribeSocketPeer(s);
+}
+
 int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
 {
     if (!gOriginalSend)
@@ -1019,35 +1171,42 @@ int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
         return SOCKET_ERROR;
     }
 
-    if (!buf || len < 12 || len > 0xFF || !gMwDirCompatEnabled.load())
+    if (!gMwDirCompatEnabled.load())
     {
         return gOriginalSend(s, buf, len, flags);
     }
 
-    // Titan-style messages use a 12-byte header: "@cmd" + 7x 0x00 + 1-byte total length.
-    if (buf[0] != '@' || buf[11] != static_cast<char>(len))
+    const TitanMessageView view = ParseTitanMessageView(buf, len);
+    if (!TitanCmdEqualsIgnoreCase(view, "@dir"))
     {
         return gOriginalSend(s, buf, len, flags);
     }
 
-    const bool isDir = (buf[1] == 'd' && buf[2] == 'i' && buf[3] == 'r');
-    if (!isDir)
-    {
-        return gOriginalSend(s, buf, len, flags);
-    }
-
-    const char* body = buf + 12;
-    const int bodyLen = len - 12;
+    const char* body = view.body;
+    const int bodyLen = view.bodyLen;
     const bool hasIdown = ContainsSubstringIgnoreCase(body, bodyLen, "IDOWN=");
+    const bool hasLadr = ContainsSubstringIgnoreCase(body, bodyLen, "ladr=");
+    const bool hasLprt = ContainsSubstringIgnoreCase(body, bodyLen, "lprt=");
 
-    if (hasIdown)
+    if (ShouldLogLanDiagSample(&gLanDiagMwDirLogCount, 80))
+    {
+        const std::string peer = DescribeSocketPeer(s);
+        std::cout << "NFSLAN: LAN-DIAG MW @dir outgoing (send) peer=" << (peer.empty() ? "?" : peer)
+                  << " len=" << len
+                  << " hadIdown=" << (hasIdown ? "1" : "0")
+                  << " hasLadr=" << (hasLadr ? "1" : "0")
+                  << " hasLprt=" << (hasLprt ? "1" : "0")
+                  << " body=" << PreviewAscii(body, bodyLen, 160) << '\n';
+    }
+
+    if (hasIdown || !hasLadr || !hasLprt)
     {
         const std::string addr = TrimAscii(gMwDirCompatAddr);
         const int port = gMwDirCompatPort.load();
         if (!addr.empty() && port > 0 && port <= 65535)
         {
             // Minimal directory response to keep MW clients from treating the server as "down".
-            // Most Wanted client expects at least ladr/lprt to be present.
+            // Most Wanted client expects ladr/lprt to be present.
             std::string patchedBody;
             patchedBody.reserve(96);
             patchedBody += "ladr=";
@@ -1058,20 +1217,18 @@ int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
             patchedBody += "\n";
 
             const int maxBodyBytes = len - 12;
-            const int patchedTotalLen = 12 + static_cast<int>(patchedBody.size()) + 1; // include trailing NUL
-            if (patchedTotalLen <= 0xFF && patchedTotalLen <= len && maxBodyBytes > 0)
+            const int maxCopyBytes = (std::max)(0, maxBodyBytes - 1); // reserve trailing NUL
+            if (maxBodyBytes > 0 && maxCopyBytes > 0)
             {
-                // Keep the original message length, otherwise server.dll may attempt to send the
-                // remainder of the original buffer after our patched send (breaking the client).
                 std::vector<char> out(static_cast<size_t>(len), 0);
-                out[0] = '@';
-                out[1] = 'd';
-                out[2] = 'i';
-                out[3] = 'r';
-                // out[4..10] remain 0.
+                std::memcpy(out.data(), buf, 12); // preserve original header exactly
                 out[11] = static_cast<char>(len);
-                std::memcpy(out.data() + 12, patchedBody.data(), patchedBody.size());
-                out[12 + patchedBody.size()] = '\0';
+                const int copyBytes = (std::min)(static_cast<int>(patchedBody.size()), maxCopyBytes);
+                if (copyBytes > 0)
+                {
+                    std::memcpy(out.data() + 12, patchedBody.data(), static_cast<size_t>(copyBytes));
+                }
+                out[12 + copyBytes] = '\0';
 
                 if (!gMwDirCompatAnnounced.exchange(true))
                 {
@@ -1082,8 +1239,7 @@ int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
                 if (gLanDiagEnabled.load())
                 {
                     std::cout << "NFSLAN: LAN-DIAG MW @dir patched (len=" << len
-                              << ", hadIdown=1).\n";
-                    std::cout << "NFSLAN: LAN-DIAG MW @dir original-body: " << PreviewAscii(body, bodyLen, 160) << '\n';
+                              << ", hadIdown=" << (hasIdown ? "1" : "0") << ").\n";
                     std::cout << "NFSLAN: LAN-DIAG MW @dir patched-body: " << PreviewAscii(out.data() + 12, len - 12, 160) << '\n';
                 }
 
@@ -2916,6 +3072,7 @@ int NFSLANWorkerMain(int argc, char* argv[])
 
     gLanDiagEnabled.store(resolved.lanDiag);
     gLanDiagBeaconLogCount.store(0);
+    gLanDiagMwDirLogCount.store(0);
 
     if (!beaconOnlyMode && underground2Server)
     {
@@ -2931,6 +3088,12 @@ int NFSLANWorkerMain(int argc, char* argv[])
         if (!sendHookInstalled)
         {
             std::cout << "NFSLAN: WARNING - MW send hook unavailable; remote clients may see IDOWN/no-master.\n";
+        }
+
+        const bool sendToHookInstalledMw = InstallSendToHook(serverdll);
+        if (!sendToHookInstalledMw)
+        {
+            std::cout << "NFSLAN: WARNING - MW sendto hook unavailable; remote clients may see IDOWN/no-master.\n";
         }
     }
 
