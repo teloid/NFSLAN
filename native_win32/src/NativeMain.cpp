@@ -2352,6 +2352,9 @@ void syncMainWindowVerticalScroll(HWND window, int requestedPos)
             nullptr,
             SW_ERASE | SW_INVALIDATE | SW_SCROLLCHILDREN);
         UpdateWindow(window);
+        // Some child controls (notably multiline EDIT) can render artifacts when the parent
+        // scrolls them via SW_SCROLLCHILDREN. Force a full repaint to keep log text stable.
+        RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
     }
 
     SCROLLINFO info{};

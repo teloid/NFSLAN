@@ -73,6 +73,8 @@ struct WorkerResolvedSettings
     bool ug2BeaconEmulation = false;
     int discoveryPort = 9999;
     std::string discoveryAddr = "127.0.0.1";
+    std::string endpointAddr = "127.0.0.1";
+    int endpointPort = 9900;
 };
 
 constexpr int kDefaultLanDiscoveryPort = 9999;
@@ -105,6 +107,14 @@ std::string gLanDiscoveryAddr = "127.0.0.1";
 std::atomic<bool> gLoopbackMirrorAnnounced{ false };
 HANDLE gServerIdentityMutex = nullptr;
 std::wstring gServerIdentityMutexName;
+
+using SendFn = int (WSAAPI*)(SOCKET, const char*, int, int);
+SendFn gOriginalSend = nullptr;
+std::atomic<bool> gSendHookInstalled{ false };
+std::atomic<bool> gMwDirCompatEnabled{ false };
+std::string gMwDirCompatAddr = "127.0.0.1";
+std::atomic<int> gMwDirCompatPort{ 9900 };
+std::atomic<bool> gMwDirCompatAnnounced{ false };
 
 bool LooksLikeUg2LanBeacon(const char* payload, int length);
 bool TryParseIpv4Address(const std::string& text, in_addr* addressOut);
@@ -763,6 +773,39 @@ bool LooksLikeUg2LanBeacon(const char* payload, int length)
     return std::memcmp(payload + kUg2IdentOffset, "NFSU", 4) == 0;
 }
 
+bool ContainsSubstringIgnoreCase(const char* data, int dataLen, const char* needle)
+{
+    if (!data || dataLen <= 0 || !needle)
+    {
+        return false;
+    }
+    const size_t needleLen = std::strlen(needle);
+    if (needleLen == 0 || needleLen > static_cast<size_t>(dataLen))
+    {
+        return false;
+    }
+
+    for (int i = 0; i + static_cast<int>(needleLen) <= dataLen; ++i)
+    {
+        bool match = true;
+        for (size_t j = 0; j < needleLen; ++j)
+        {
+            const unsigned char a = static_cast<unsigned char>(data[i + static_cast<int>(j)]);
+            const unsigned char b = static_cast<unsigned char>(needle[j]);
+            if (std::tolower(a) != std::tolower(b))
+            {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const sockaddr* to, int tolen)
 {
     if (!gOriginalSendTo)
@@ -925,6 +968,232 @@ bool InstallSendToHook(HMODULE moduleHandle)
     }
 
     std::cerr << "NFSLAN: WARNING - could not find sendto import thunk to hook.\n";
+    return false;
+}
+
+int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
+{
+    if (!gOriginalSend)
+    {
+        return SOCKET_ERROR;
+    }
+
+    if (!buf || len < 12 || len > 0xFF || !gMwDirCompatEnabled.load())
+    {
+        return gOriginalSend(s, buf, len, flags);
+    }
+
+    // Titan-style messages use a 12-byte header: "@cmd" + 7x 0x00 + 1-byte total length.
+    if (buf[0] != '@' || buf[11] != static_cast<char>(len))
+    {
+        return gOriginalSend(s, buf, len, flags);
+    }
+
+    const bool isDir = (buf[1] == 'd' && buf[2] == 'i' && buf[3] == 'r');
+    if (!isDir)
+    {
+        return gOriginalSend(s, buf, len, flags);
+    }
+
+    const char* body = buf + 12;
+    const int bodyLen = len - 12;
+    const bool hasLadr = ContainsSubstringIgnoreCase(body, bodyLen, "ladr=");
+    const bool hasLprt = ContainsSubstringIgnoreCase(body, bodyLen, "lprt=");
+    const bool hasIdown = ContainsSubstringIgnoreCase(body, bodyLen, "IDOWN=");
+
+    if (hasIdown || !hasLadr || !hasLprt)
+    {
+        const std::string addr = TrimAscii(gMwDirCompatAddr);
+        const int port = gMwDirCompatPort.load();
+        if (!addr.empty() && port > 0 && port <= 65535)
+        {
+            // Minimal directory response to keep MW clients from treating the server as "down".
+            // Most Wanted client expects at least ladr/lprt to be present.
+            std::string patchedBody;
+            patchedBody.reserve(96);
+            patchedBody += "ladr=";
+            patchedBody += addr;
+            patchedBody += "\n";
+            patchedBody += "lprt=";
+            patchedBody += std::to_string(port);
+            patchedBody += "\n";
+
+            const int totalLen = 12 + static_cast<int>(patchedBody.size()) + 1; // include trailing NUL
+            if (totalLen <= 0xFF)
+            {
+                std::array<char, 0x100> out{};
+                out[0] = '@';
+                out[1] = 'd';
+                out[2] = 'i';
+                out[3] = 'r';
+                // out[4..10] are already 0.
+                out[11] = static_cast<char>(totalLen);
+                std::memcpy(out.data() + 12, patchedBody.data(), patchedBody.size());
+                out[12 + patchedBody.size()] = '\0';
+
+                if (!gMwDirCompatAnnounced.exchange(true))
+                {
+                    std::cout << "NFSLAN: Installed MW @dir compatibility response (forcing ladr/lprt to "
+                              << addr << ":" << port << ").\n";
+                }
+
+                if (gLanDiagEnabled.load())
+                {
+                    std::cout << "NFSLAN: LAN-DIAG MW @dir patched (len=" << totalLen
+                              << ", hadIdown=" << (hasIdown ? 1 : 0)
+                              << ", hadLadr=" << (hasLadr ? 1 : 0)
+                              << ", hadLprt=" << (hasLprt ? 1 : 0) << ").\n";
+                }
+
+                return gOriginalSend(s, out.data(), totalLen, flags);
+            }
+        }
+    }
+
+    return gOriginalSend(s, buf, len, flags);
+}
+
+bool InstallSendHook(HMODULE moduleHandle)
+{
+    if (!moduleHandle || gSendHookInstalled.load())
+    {
+        return true;
+    }
+
+    const auto base = reinterpret_cast<std::uint8_t*>(moduleHandle);
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        std::cerr << "NFSLAN: WARNING - cannot install send hook: invalid DOS header.\n";
+        return false;
+    }
+
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (!nt || nt->Signature != IMAGE_NT_SIGNATURE)
+    {
+        std::cerr << "NFSLAN: WARNING - cannot install send hook: invalid NT header.\n";
+        return false;
+    }
+
+    const IMAGE_DATA_DIRECTORY importDir =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (importDir.VirtualAddress == 0 || importDir.Size == 0)
+    {
+        std::cerr << "NFSLAN: WARNING - cannot install send hook: import table missing.\n";
+        return false;
+    }
+
+    const auto patchThunk = [&](IMAGE_THUNK_DATA* thunk, const char* sourceTag) -> bool
+    {
+        if (thunk->u1.Function == reinterpret_cast<ULONG_PTR>(&HookedSend))
+        {
+            gSendHookInstalled.store(true);
+            std::cout << "NFSLAN: send hook already installed (" << sourceTag << ").\n";
+            return true;
+        }
+
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), PAGE_READWRITE, &oldProtect))
+        {
+            std::cerr << "NFSLAN: WARNING - cannot install send hook: VirtualProtect failed.\n";
+            return false;
+        }
+
+        gOriginalSend = reinterpret_cast<SendFn>(thunk->u1.Function);
+        thunk->u1.Function = reinterpret_cast<ULONG_PTR>(&HookedSend);
+
+        DWORD restoreProtect = 0;
+        VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), oldProtect, &restoreProtect);
+        FlushInstructionCache(GetCurrentProcess(), &thunk->u1.Function, sizeof(thunk->u1.Function));
+
+        gSendHookInstalled.store(true);
+        std::cout << "NFSLAN: Installed send hook (" << sourceTag << ").\n";
+        return true;
+    };
+
+    auto* descriptor = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + importDir.VirtualAddress);
+    for (; descriptor->Name != 0; ++descriptor)
+    {
+        const auto* dllName = reinterpret_cast<const char*>(base + descriptor->Name);
+        if (!dllName
+            || (!EqualsIgnoreCase(dllName, "ws2_32.dll") && !EqualsIgnoreCase(dllName, "wsock32.dll")))
+        {
+            continue;
+        }
+
+        if (descriptor->OriginalFirstThunk == 0)
+        {
+            continue;
+        }
+
+        auto* originalThunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->OriginalFirstThunk);
+        auto* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->FirstThunk);
+
+        for (; originalThunk->u1.AddressOfData != 0; ++originalThunk, ++thunk)
+        {
+            if (IMAGE_SNAP_BY_ORDINAL(originalThunk->u1.Ordinal))
+            {
+                continue;
+            }
+
+            const auto* importByName =
+                reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(base + originalThunk->u1.AddressOfData);
+            const char* functionName = reinterpret_cast<const char*>(importByName->Name);
+            if (!functionName)
+            {
+                continue;
+            }
+
+            const std::string fn(functionName);
+            if (!(EqualsIgnoreCase(fn, "send")
+                || EqualsIgnoreCase(fn, "_send@16")
+                || EqualsIgnoreCase(fn, "__imp_send")))
+            {
+                continue;
+            }
+
+            return patchThunk(thunk, "named import");
+        }
+    }
+
+    FARPROC ws2Send = nullptr;
+    if (HMODULE ws2 = GetModuleHandleA("ws2_32.dll"))
+    {
+        ws2Send = GetProcAddress(ws2, "send");
+    }
+    else if (HMODULE ws2Loaded = LoadLibraryA("ws2_32.dll"))
+    {
+        ws2Send = GetProcAddress(ws2Loaded, "send");
+    }
+
+    FARPROC wsockSend = nullptr;
+    if (HMODULE wsock = GetModuleHandleA("wsock32.dll"))
+    {
+        wsockSend = GetProcAddress(wsock, "send");
+    }
+
+    if (!ws2Send && !wsockSend)
+    {
+        std::cerr << "NFSLAN: WARNING - could not resolve send in ws2_32/wsock32.\n";
+        return false;
+    }
+
+    descriptor = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + importDir.VirtualAddress);
+    for (; descriptor->Name != 0; ++descriptor)
+    {
+        auto* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->FirstThunk);
+        for (; thunk->u1.Function != 0; ++thunk)
+        {
+            const ULONG_PTR fn = thunk->u1.Function;
+            if ((ws2Send && fn == reinterpret_cast<ULONG_PTR>(ws2Send))
+                || (wsockSend && fn == reinterpret_cast<ULONG_PTR>(wsockSend)))
+            {
+                return patchThunk(thunk, "pointer match import");
+            }
+        }
+    }
+
+    std::cerr << "NFSLAN: WARNING - could not find send import thunk to hook.\n";
     return false;
 }
 
@@ -2044,6 +2313,13 @@ bool ApplyServerConfigCompatibility(
 
     resolved.discoveryPort = discoveryPort;
     resolved.discoveryAddr = discoveryAddr;
+    resolved.endpointAddr = underground2Server ? ug2EndpointAddrValue : mwEndpointAddrValue;
+    int parsedEndpointPort = 9900;
+    if (!TryParseIntRange(portValue, 1, 65535, &parsedEndpointPort))
+    {
+        parsedEndpointPort = 9900;
+    }
+    resolved.endpointPort = parsedEndpointPort;
 
     const auto cfg = [&](const std::string& key) -> std::string
     {
@@ -2572,6 +2848,10 @@ int NFSLANWorkerMain(int argc, char* argv[])
     gLocalEmulationEnabled.store(resolved.localEmulation);
     gLanDiscoveryPort.store(resolved.discoveryPort);
     gLanDiscoveryAddr = resolved.discoveryAddr;
+    gMwDirCompatEnabled.store(!underground2Server);
+    gMwDirCompatAddr = resolved.endpointAddr;
+    gMwDirCompatPort.store(resolved.endpointPort);
+    gMwDirCompatAnnounced.store(false);
 
     if (resolved.sameMachineMode && !options.sameMachineMode)
     {
@@ -2601,6 +2881,14 @@ int NFSLANWorkerMain(int argc, char* argv[])
         if (!sendToHookInstalled)
         {
             std::cout << "NFSLAN: WARNING - UG2 sendto hook unavailable; using bridge-level beacon diagnostics only.\n";
+        }
+    }
+    else if (!beaconOnlyMode && !underground2Server)
+    {
+        const bool sendHookInstalled = InstallSendHook(serverdll);
+        if (!sendHookInstalled)
+        {
+            std::cout << "NFSLAN: WARNING - MW send hook unavailable; remote clients may see IDOWN/no-master.\n";
         }
     }
 
