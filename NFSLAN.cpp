@@ -807,6 +807,126 @@ bool ContainsSubstringIgnoreCase(const char* data, int dataLen, const char* need
     return false;
 }
 
+std::string PreviewAscii(const char* data, int dataLen, int maxChars)
+{
+    if (!data || dataLen <= 0 || maxChars <= 0)
+    {
+        return {};
+    }
+    const int limit = (std::min)(dataLen, maxChars);
+    std::string out;
+    out.reserve(static_cast<size_t>(limit));
+    for (int i = 0; i < limit; ++i)
+    {
+        const char c = data[i];
+        if (c == '\0')
+        {
+            out += "\\0";
+            continue;
+        }
+        if (c == '\r')
+        {
+            out += "\\r";
+            continue;
+        }
+        if (c == '\n')
+        {
+            out += "\\n";
+            continue;
+        }
+        if (IsAsciiPrintable(c))
+        {
+            out.push_back(c);
+            continue;
+        }
+        out.push_back('.');
+    }
+    if (dataLen > limit)
+    {
+        out += "...";
+    }
+    return out;
+}
+
+struct TitanMessageView
+{
+    bool valid = false;
+    char cmd[4] = { 0, 0, 0, 0 };
+    const char* body = nullptr;
+    int bodyLen = 0;
+};
+
+TitanMessageView ParseTitanMessageView(const char* buf, int len)
+{
+    TitanMessageView view{};
+    if (!buf || len < 12 || len > 0xFF)
+    {
+        return view;
+    }
+
+    if (buf[0] != '@' || buf[11] != static_cast<char>(len))
+    {
+        return view;
+    }
+
+    view.valid = true;
+    view.cmd[0] = buf[0];
+    view.cmd[1] = buf[1];
+    view.cmd[2] = buf[2];
+    view.cmd[3] = buf[3];
+    view.body = buf + 12;
+    view.bodyLen = len - 12;
+    return view;
+}
+
+bool TitanCmdEqualsIgnoreCase(const TitanMessageView& view, const char* cmd4)
+{
+    if (!view.valid || !cmd4)
+    {
+        return false;
+    }
+    for (int i = 0; i < 4; ++i)
+    {
+        if (std::tolower(static_cast<unsigned char>(view.cmd[i]))
+            != std::tolower(static_cast<unsigned char>(cmd4[i])))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string FormatIpv4Sockaddr(const sockaddr_in& addr)
+{
+    const char* ip = inet_ntoa(addr.sin_addr);
+    if (!ip)
+    {
+        ip = "?";
+    }
+    return std::string(ip) + ":" + std::to_string(static_cast<int>(ntohs(addr.sin_port)));
+}
+
+std::string DescribeSocketPeer(SOCKET s)
+{
+    sockaddr_in peer{};
+    int peerLen = sizeof(peer);
+    if (getpeername(s, reinterpret_cast<sockaddr*>(&peer), &peerLen) == 0 && peer.sin_family == AF_INET)
+    {
+        return FormatIpv4Sockaddr(peer);
+    }
+    return {};
+}
+
+std::string DescribeSendToTarget(SOCKET s, const sockaddr* to, int tolen)
+{
+    if (to && tolen >= static_cast<int>(sizeof(sockaddr_in)) && to->sa_family == AF_INET)
+    {
+        const auto* in = reinterpret_cast<const sockaddr_in*>(to);
+        return FormatIpv4Sockaddr(*in);
+    }
+    return DescribeSocketPeer(s);
+}
+
 int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const sockaddr* to, int tolen)
 {
     if (!gOriginalSendTo)
@@ -1041,127 +1161,6 @@ bool InstallSendToHook(HMODULE moduleHandle)
 
     std::cerr << "NFSLAN: WARNING - could not find sendto import thunk to hook.\n";
     return false;
-}
-
-std::string PreviewAscii(const char* data, int dataLen, int maxChars)
-{
-    if (!data || dataLen <= 0 || maxChars <= 0)
-    {
-        return {};
-    }
-    const int limit = std::min(dataLen, maxChars);
-    std::string out;
-    out.reserve(static_cast<size_t>(limit));
-    for (int i = 0; i < limit; ++i)
-    {
-        const char c = data[i];
-        if (c == '\0')
-        {
-            out += "\\0";
-            continue;
-        }
-        if (c == '\r')
-        {
-            out += "\\r";
-            continue;
-        }
-        if (c == '\n')
-        {
-            out += "\\n";
-            continue;
-        }
-        if (IsAsciiPrintable(c))
-        {
-            out.push_back(c);
-            continue;
-        }
-        out.push_back('.');
-    }
-    if (dataLen > limit)
-    {
-        out += "...";
-    }
-    return out;
-}
-
-struct TitanMessageView
-{
-    bool valid = false;
-    char cmd[4] = { 0, 0, 0, 0 };
-    const char* body = nullptr;
-    int bodyLen = 0;
-};
-
-TitanMessageView ParseTitanMessageView(const char* buf, int len)
-{
-    TitanMessageView view{};
-    if (!buf || len < 12 || len > 0xFF)
-    {
-        return view;
-    }
-
-    if (buf[0] != '@' || buf[11] != static_cast<char>(len))
-    {
-        return view;
-    }
-
-    view.valid = true;
-    view.cmd[0] = buf[0];
-    view.cmd[1] = buf[1];
-    view.cmd[2] = buf[2];
-    view.cmd[3] = buf[3];
-    view.body = buf + 12;
-    view.bodyLen = len - 12;
-    return view;
-}
-
-bool TitanCmdEqualsIgnoreCase(const TitanMessageView& view, const char* cmd4)
-{
-    if (!view.valid || !cmd4)
-    {
-        return false;
-    }
-    for (int i = 0; i < 4; ++i)
-    {
-        if (std::tolower(static_cast<unsigned char>(view.cmd[i]))
-            != std::tolower(static_cast<unsigned char>(cmd4[i])))
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
-std::string FormatIpv4Sockaddr(const sockaddr_in& addr)
-{
-    char ipBuf[64]{};
-    if (!InetNtopA(AF_INET, const_cast<in_addr*>(&addr.sin_addr), ipBuf, sizeof(ipBuf)))
-    {
-        const char* fallback = inet_ntoa(addr.sin_addr);
-        std::snprintf(ipBuf, sizeof(ipBuf), "%s", fallback ? fallback : "?");
-    }
-    return std::string(ipBuf) + ":" + std::to_string(static_cast<int>(ntohs(addr.sin_port)));
-}
-
-std::string DescribeSocketPeer(SOCKET s)
-{
-    sockaddr_in peer{};
-    int peerLen = sizeof(peer);
-    if (getpeername(s, reinterpret_cast<sockaddr*>(&peer), &peerLen) == 0 && peer.sin_family == AF_INET)
-    {
-        return FormatIpv4Sockaddr(peer);
-    }
-    return {};
-}
-
-std::string DescribeSendToTarget(SOCKET s, const sockaddr* to, int tolen)
-{
-    if (to && tolen >= static_cast<int>(sizeof(sockaddr_in)) && to->sa_family == AF_INET)
-    {
-        const auto* in = reinterpret_cast<const sockaddr_in*>(to);
-        return FormatIpv4Sockaddr(*in);
-    }
-    return DescribeSocketPeer(s);
 }
 
 int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
