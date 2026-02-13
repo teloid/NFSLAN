@@ -76,7 +76,7 @@ struct WorkerResolvedSettings
 };
 
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-13-worker-mw-idown-detect-1";
+constexpr const char* kBuildTag = "2026-02-13-worker-mw-caddr-1";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -1967,22 +1967,13 @@ bool ApplyServerConfigCompatibility(
     }
     else
     {
-        // MW endpoints: AADDR/APORT are required. CADDR/CPORT appear optional and can
-        // enable extra services in some builds, so only normalize them if already present.
+        // MW endpoints: AADDR/APORT are required. CADDR/CPORT are used by some builds during
+        // connection setup and are commonly expected to mirror the primary endpoint identity.
         EnsureMirroredKey(&configText, "APORT", portValue, &changed);
         EnsureMirroredKey(&configText, "AADDR", mwEndpointAddrValue, &changed);
 
-        const std::string existingCaddr = TrimAscii(GetConfigValue(configText, "CADDR").value_or(""));
-        if (!existingCaddr.empty())
-        {
-            EnsureMirroredKey(&configText, "CADDR", mwEndpointAddrValue, &changed);
-        }
-
-        const std::string existingCport = TrimAscii(GetConfigValue(configText, "CPORT").value_or(""));
-        if (!existingCport.empty())
-        {
-            EnsureMirroredKey(&configText, "CPORT", portValue, &changed);
-        }
+        EnsureMirroredKey(&configText, "CADDR", mwEndpointAddrValue, &changed);
+        EnsureMirroredKey(&configText, "CPORT", portValue, &changed);
     }
 
     int discoveryPort = kDefaultLanDiscoveryPort;
