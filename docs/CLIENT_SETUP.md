@@ -8,9 +8,16 @@ In `server.cfg` (launcher also normalizes these):
 
 - `PORT=9900` (or your chosen port)
 - `ADDR=<host ip>`
-- `LOBBY_IDENT=<mode protocol id>` (`NFSU2NA` for U2, `NFSMWNA` for MW)
-- `LOBBY=<mode protocol id>` (`NFSU2NA` for U2, `NFSMWNA` for MW)
+- `LOBBY_IDENT=<protocol id>` (must match your client build/region)
+- `LOBBY=<protocol id>` (must match `LOBBY_IDENT`)
 - `U2_START_MODE=0` (U2 only)
+
+Common IDs:
+
+- U2 (NA builds): `NFSU2NA`
+- MW (NA builds): `NFSMWNA`
+
+If one platform/build cannot see the server (e.g., SteamOS vs Windows), capture `udp.port == 9999` on the client and look at the ASCII ID in the beacon payload (8-byte field). Use that value for `LOBBY_IDENT`/`LOBBY`.
 
 ## Same-PC host + client
 

@@ -76,7 +76,7 @@ struct WorkerResolvedSettings
 };
 
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-12-worker-u2-only-5";
+constexpr const char* kBuildTag = "2026-02-13-worker-protoid-mw-endpoints-1";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -1733,21 +1733,32 @@ bool ApplyServerConfigCompatibility(
     bool changed = false;
     std::cout << "NFSLAN: Detected server profile: " << (underground2Server ? "Underground 2" : "Most Wanted") << '\n';
 
+    // LOBBY_IDENT/LOBBY are protocol IDs that must match the client build.
+    // Default to NA values only when missing; do not force-override.
     const std::string lobbyIdentDefault = underground2Server ? "NFSU2NA" : "NFSMWNA";
-    if (underground2Server)
+    std::string lobbyIdent = TrimAscii(GetConfigValue(configText, "LOBBY_IDENT").value_or(""));
+    if (lobbyIdent.empty())
     {
         ForceConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
-        ForceConfigValue(&configText, "LOBBY", lobbyIdentDefault, &changed);
+        lobbyIdent = lobbyIdentDefault;
     }
-    else
+
+    const std::string configuredLobby = TrimAscii(GetConfigValue(configText, "LOBBY").value_or(""));
+    if (configuredLobby.empty())
     {
-        ForceConfigValue(&configText, "LOBBY_IDENT", lobbyIdentDefault, &changed);
-        ForceConfigValue(&configText, "LOBBY", lobbyIdentDefault, &changed);
+        ForceConfigValue(&configText, "LOBBY", lobbyIdent, &changed);
+    }
+    else if (!EqualsIgnoreCase(configuredLobby, lobbyIdent))
+    {
+        std::cout << "NFSLAN: WARNING - LOBBY='" << configuredLobby
+                  << "' does not match LOBBY_IDENT='" << lobbyIdent << "'. Forcing LOBBY to match.\n";
+        ForceConfigValue(&configText, "LOBBY", lobbyIdent, &changed);
     }
 
     const std::string portValue = EnsureConfigValue(&configText, "PORT", "9900", &changed);
     std::string addrValue = EnsureConfigValue(&configText, "ADDR", "0.0.0.0", &changed);
     std::string ug2EndpointAddrValue = addrValue;
+    std::string mwEndpointAddrValue = addrValue;
 
     // Keep essential services enabled even for minimal server.cfg files.
     EnsureConfigValue(&configText, "ACCOUNT", "1", &changed);
@@ -1773,6 +1784,28 @@ bool ApplyServerConfigCompatibility(
             {
                 ug2EndpointAddrValue = "127.0.0.1";
                 std::cout << "NFSLAN: WARNING - could not auto-detect LAN IPv4 for UG2 endpoint identity; "
+                             "falling back to 127.0.0.1.\n";
+            }
+        }
+    }
+    else
+    {
+        const std::string trimmedAddr = TrimAscii(addrValue);
+        const bool wildcardAddr = trimmedAddr.empty() || EqualsIgnoreCase(trimmedAddr, "0.0.0.0");
+        const bool bindExpressionAddr = trimmedAddr.find("%%bind(") != std::string::npos;
+        if (wildcardAddr || bindExpressionAddr)
+        {
+            const auto detectedLan = DetectPreferredLocalLanIpv4();
+            if (detectedLan.has_value())
+            {
+                mwEndpointAddrValue = *detectedLan;
+                std::cout << "NFSLAN: MW endpoint identity resolved to LAN IPv4 " << mwEndpointAddrValue
+                          << " (ADDR='" << trimmedAddr << "').\n";
+            }
+            else if (wildcardAddr)
+            {
+                mwEndpointAddrValue = "127.0.0.1";
+                std::cout << "NFSLAN: WARNING - could not auto-detect LAN IPv4 for MW endpoint identity; "
                              "falling back to 127.0.0.1.\n";
             }
         }
@@ -1883,6 +1916,16 @@ bool ApplyServerConfigCompatibility(
         ForceConfigValue(&configText, "APORT", portValue, &changed);
         std::cout << "NFSLAN: UG2 endpoints aligned with resolved endpoint identity and PORT.\n";
     }
+    else
+    {
+        // MW clients can discover the server via UDP beacons but still fail to join if the
+        // configured endpoints resolve to loopback/wildcard. Force concrete endpoint identity.
+        ForceConfigValue(&configText, "AADDR", mwEndpointAddrValue, &changed);
+        ForceConfigValue(&configText, "CADDR", mwEndpointAddrValue, &changed);
+        ForceConfigValue(&configText, "APORT", portValue, &changed);
+        ForceConfigValue(&configText, "CPORT", portValue, &changed);
+        std::cout << "NFSLAN: MW endpoints aligned with resolved endpoint identity and PORT.\n";
+    }
 
     if (underground2Server)
     {
@@ -1897,13 +1940,14 @@ bool ApplyServerConfigCompatibility(
     }
     else
     {
+        // MW endpoints are force-aligned above; only backfill missing keys for compatibility.
         for (const std::string& key : { std::string("APORT"), std::string("CPORT") })
         {
             EnsureMirroredKey(&configText, key, portValue, &changed);
         }
         for (const std::string& key : { std::string("AADDR"), std::string("CADDR") })
         {
-            EnsureMirroredKey(&configText, key, addrValue, &changed);
+            EnsureMirroredKey(&configText, key, mwEndpointAddrValue, &changed);
         }
     }
 

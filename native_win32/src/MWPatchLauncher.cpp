@@ -510,6 +510,7 @@ bool injectSyntheticLanEntry(
     std::uint32_t entryCount,
     std::uint32_t preferredAddrA,
     std::uint32_t preferredAddrB,
+    const std::string& injectedIdent,
     const std::string& injectedName,
     int injectedPort,
     std::uint64_t* injectedOut)
@@ -603,13 +604,13 @@ bool injectSyntheticLanEntry(
         return false;
     }
 
-    const std::string ident = "NFSMWNA";
+    const std::string effectiveIdent = injectedIdent.empty() ? "NFSMWNA" : injectedIdent;
     const std::string name = injectedName.empty() ? "Test Server" : injectedName;
     const int clampedPort = (std::max)(1, (std::min)(65535, injectedPort));
     const std::string stats = std::to_string(clampedPort) + "|0";
     const std::string transport = "TCP:~1:1024\tUDP:~1:1024";
 
-    if (!writeRemoteZeroedString(process, entry + kLanEntryIdentOffset, 8, ident)
+    if (!writeRemoteZeroedString(process, entry + kLanEntryIdentOffset, 8, effectiveIdent)
         || !writeRemoteZeroedString(process, entry + kLanEntryNameOffset, 0x20, name)
         || !writeRemoteZeroedString(process, entry + kLanEntryStatsOffset, 0xC0, stats)
         || !writeRemoteZeroedString(process, entry + kLanEntryTransportOffset, 0x78, transport))
@@ -663,6 +664,7 @@ void printUsage()
         << L"Usage:\n"
         << L"  NFSLAN-MW-Patcher.exe [options] [path-to-speed.exe] [game args...]\n\n"
         << L"Options:\n"
+        << L"  --inject-ident <id>   Protocol ID (default: NFSMWNA, must match client build)\n"
         << L"  --inject-name <name>   Visible LAN row name (default: Test Server)\n"
         << L"  --inject-port <port>   Visible LAN row port (default: 9900)\n"
         << L"  --inject-ip <ipv4>     Visible LAN row target IP (default: observed or 127.0.0.1)\n"
@@ -677,6 +679,7 @@ int wmain(int argc, wchar_t* argv[])
 {
     std::wstring gameExe;
     std::vector<std::wstring> gameArgs;
+    std::wstring injectIdent = L"NFSMWNA";
     std::wstring injectName = L"Test Server";
     int injectPort = 9900;
     std::optional<std::uint32_t> injectAddrOverride;
@@ -699,6 +702,17 @@ int wmain(int argc, wchar_t* argv[])
         if (!forceGameArgs && arg == L"--")
         {
             forceGameArgs = true;
+            continue;
+        }
+
+        if (!forceGameArgs && arg == L"--inject-ident")
+        {
+            if (i + 1 >= argc)
+            {
+                logLine(L"Missing value for --inject-ident.");
+                return 1;
+            }
+            injectIdent = argv[++i];
             continue;
         }
 
@@ -768,6 +782,11 @@ int wmain(int argc, wchar_t* argv[])
         }
     }
 
+    std::string injectIdentAscii = sanitizeAscii(injectIdent, 8);
+    if (injectIdentAscii.empty())
+    {
+        injectIdentAscii = "NFSMWNA";
+    }
     const std::string injectNameAscii = sanitizeAscii(injectName, 0x20);
 
     const std::filesystem::path gamePath = std::filesystem::path(trim(gameExe));
@@ -921,6 +940,7 @@ int wmain(int argc, wchar_t* argv[])
                 cycleInfo.entryCount,
                 injectAddrOverride.value_or(cycleInfo.sampleAddrA),
                 injectAddrOverride.value_or(cycleInfo.sampleAddrB),
+                injectIdentAscii,
                 injectNameAscii,
                 injectPort,
                 &injectedThisCycle))
@@ -973,4 +993,3 @@ int wmain(int argc, wchar_t* argv[])
     CloseHandle(pi.hProcess);
     return 0;
 }
-

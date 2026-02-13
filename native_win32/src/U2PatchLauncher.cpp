@@ -500,6 +500,7 @@ bool injectSyntheticLanEntry(
     std::uint32_t entryCount,
     std::uint32_t preferredAddrA,
     std::uint32_t preferredAddrB,
+    const std::string& injectedIdent,
     const std::string& injectedName,
     int injectedPort,
     std::uint64_t* injectedOut)
@@ -576,7 +577,7 @@ bool injectSyntheticLanEntry(
             }
         }
 
-        if (std::memcmp(ident.data(), "NFSU2NA", 7) == 0)
+        if (std::memcmp(ident.data(), "NFSU2", 5) == 0)
         {
             hasRealU2Entry = true;
             realU2Entry = candidate;
@@ -628,14 +629,14 @@ bool injectSyntheticLanEntry(
         return false;
     }
 
-    const std::string ident = "NFSU2NA";
+    const std::string effectiveIdent = injectedIdent.empty() ? "NFSU2NA" : injectedIdent;
     const std::string name = injectedName.empty() ? "Test Server" : injectedName;
     const int clampedPort = (std::max)(1, (std::min)(65535, injectedPort));
     // Match stock-like dedicated-server beacon formatting.
     const std::string stats = std::to_string(clampedPort) + "|0";
     const std::string transport = "TCP:~1:1024\tUDP:~1:1024";
 
-    if (!writeRemoteZeroedString(process, entry + kLanEntryIdentOffset, 8, ident)
+    if (!writeRemoteZeroedString(process, entry + kLanEntryIdentOffset, 8, effectiveIdent)
         || !writeRemoteZeroedString(process, entry + kLanEntryNameOffset, 0x20, name)
         || !writeRemoteZeroedString(process, entry + kLanEntryStatsOffset, 0xC0, stats)
         || !writeRemoteZeroedString(process, entry + kLanEntryTransportOffset, 0x78, transport))
@@ -692,6 +693,7 @@ void printUsage()
         << L"Usage:\n"
         << L"  NFSLAN-U2-Patcher.exe [options] [path-to-speed2.exe] [game args...]\n\n"
         << L"Options:\n"
+        << L"  --inject-ident <id>   Protocol ID (default: NFSU2NA, must match client build)\n"
         << L"  --inject-name <name>   Visible LAN row name (default: Test Server)\n"
         << L"  --inject-port <port>   Visible LAN row port in stats field (default: 9900)\n"
         << L"  --inject-ip <ipv4>     Visible LAN row target IP (default: observed or 127.0.0.1)\n"
@@ -706,6 +708,7 @@ int wmain(int argc, wchar_t* argv[])
 {
     std::wstring gameExe;
     std::vector<std::wstring> gameArgs;
+    std::wstring injectIdent = L"NFSU2NA";
     std::wstring injectName = L"Test Server";
     int injectPort = 9900;
     std::optional<std::uint32_t> injectAddrOverride;
@@ -728,6 +731,17 @@ int wmain(int argc, wchar_t* argv[])
         if (!forceGameArgs && arg == L"--")
         {
             forceGameArgs = true;
+            continue;
+        }
+
+        if (!forceGameArgs && arg == L"--inject-ident")
+        {
+            if (i + 1 >= argc)
+            {
+                logLine(L"Missing value for --inject-ident.");
+                return 1;
+            }
+            injectIdent = argv[++i];
             continue;
         }
 
@@ -797,6 +811,11 @@ int wmain(int argc, wchar_t* argv[])
         }
     }
 
+    std::string injectIdentAscii = sanitizeAscii(injectIdent, 8);
+    if (injectIdentAscii.empty())
+    {
+        injectIdentAscii = "NFSU2NA";
+    }
     const std::string injectNameAscii = sanitizeAscii(injectName, 0x20);
 
     const std::filesystem::path gamePath = std::filesystem::path(trim(gameExe));
@@ -952,6 +971,7 @@ int wmain(int argc, wchar_t* argv[])
                 cycleInfo.entryCount,
                 injectAddrOverride.value_or(cycleInfo.sampleAddrA),
                 injectAddrOverride.value_or(cycleInfo.sampleAddrB),
+                injectIdentAscii,
                 injectNameAscii,
                 injectPort,
                 &injectedThisCycle))

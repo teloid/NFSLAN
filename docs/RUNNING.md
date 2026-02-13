@@ -28,10 +28,10 @@ Use this when you want server runtime without game patch launcher.
 - `PORT`: server port (`9900` default)
 - `ADDR`: server bind/identity address
 - `U2_START_MODE`: `0..13` (`0` default, UG2 only)
-- `LOBBY_IDENT`: must match protocol ID for selected game
-- `LOBBY`: must match protocol ID for selected game
+- `LOBBY_IDENT`: protocol ID (must match your client build/region)
+- `LOBBY`: must match `LOBBY_IDENT`
 
-The launcher enforces protocol IDs and writes compatibility values before start.
+The launcher writes compatibility values before start and keeps `LOBBY` aligned to `LOBBY_IDENT` without forcing a region.
 
 ## Required files in game folder
 

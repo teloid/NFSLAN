@@ -130,7 +130,8 @@ bool launchProfilePatcherForGame(
     const std::filesystem::path& gameExePath,
     const std::wstring& injectName,
     int injectPort,
-    const std::wstring& injectIp);
+    const std::wstring& injectIp,
+    const std::wstring& injectIdent);
 std::wstring formatIpv4FromNetworkOrder(DWORD addressNetworkOrder);
 std::wstring getWindowTextString(HWND window);
 std::wstring trim(const std::wstring& input);
@@ -1258,8 +1259,10 @@ ServerDllFlavor detectServerDllFlavor(const std::filesystem::path& dllPath)
     }
 
     std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    const bool hasU2 = (bytes.find("NFSU2NA") != std::string::npos);
-    const bool hasMw = (bytes.find("NFSMWNA") != std::string::npos);
+
+    // Protocol IDs vary by game build/region (e.g., ...NA, ...EU). Prefer prefix probes.
+    const bool hasU2 = (bytes.find("NFSU2") != std::string::npos);
+    const bool hasMw = (bytes.find("NFSMW") != std::string::npos);
 
     if (hasU2 && !hasMw)
     {
@@ -1319,20 +1322,22 @@ bool validateProfileConfigForLaunch(const std::filesystem::path& serverDir, std:
     {
         errors.push_back(L"LOBBY_IDENT (protocol identifier, not server name) is missing.");
     }
-    else if (!equalCaseInsensitive(lobbyIdent, expectedLobby))
-    {
-        errors.push_back(
-            L"LOBBY_IDENT must be protocol value " + expectedLobby + L" for selected profile, got '" + lobbyIdent + L"'.");
-    }
 
     if (lobby.empty())
     {
         errors.push_back(L"LOBBY (protocol identifier, not server name) is missing.");
     }
-    else if (!equalCaseInsensitive(lobby, expectedLobby))
+
+    if (!lobbyIdent.empty() && !lobby.empty() && !equalCaseInsensitive(lobbyIdent, lobby))
     {
-        errors.push_back(
-            L"LOBBY must be protocol value " + expectedLobby + L" for selected profile, got '" + lobby + L"'.");
+        errors.push_back(L"LOBBY must match LOBBY_IDENT (protocol identifier).");
+    }
+
+    // Protocol IDs vary by game build; warn but do not block on non-default values.
+    if (!lobbyIdent.empty() && !equalCaseInsensitive(lobbyIdent, expectedLobby))
+    {
+        warnings.push_back(
+            L"LOBBY_IDENT differs from default '" + expectedLobby + L"'. Ensure it matches your client build.");
     }
 
     if (profile == GameProfile::Underground2)
@@ -1527,8 +1532,18 @@ void applyFieldsToConfigEditor()
     }
 
     // LOBBY/LOBBY_IDENT are protocol IDs, not visible server names.
-    configText = upsertConfigValue(configText, L"LOBBY_IDENT", expectedLobby);
-    configText = upsertConfigValue(configText, L"LOBBY", expectedLobby);
+    // Do not force-override: game builds/regions use different IDs.
+    std::wstring lobbyIdent = trim(getConfigValue(configText, L"LOBBY_IDENT"));
+    std::wstring lobby = trim(getConfigValue(configText, L"LOBBY"));
+    if (lobbyIdent.empty())
+    {
+        lobbyIdent = expectedLobby;
+        configText = upsertConfigValue(configText, L"LOBBY_IDENT", lobbyIdent);
+    }
+    if (lobby.empty() || !equalCaseInsensitive(lobby, lobbyIdent))
+    {
+        configText = upsertConfigValue(configText, L"LOBBY", lobbyIdent);
+    }
 
     // Streamlined launcher flow: force-disable legacy same-machine emulation toggles.
     configText = upsertConfigValue(configText, L"FORCE_LOCAL", L"0");
@@ -1713,7 +1728,8 @@ bool launchProfilePatcherForGame(
     const std::filesystem::path& gameExePath,
     const std::wstring& injectName,
     int injectPort,
-    const std::wstring& injectIp)
+    const std::wstring& injectIp,
+    const std::wstring& injectIdent)
 {
     const std::filesystem::path patcherPath = exeDirectory() / patcherExeNameForProfile(profile);
     if (!std::filesystem::exists(patcherPath))
@@ -1729,6 +1745,7 @@ bool launchProfilePatcherForGame(
         + L" --inject-name \"" + escapeForQuotedArg(injectName) + L"\""
         + L" --inject-port " + std::to_wstring(injectPort)
         + L" --inject-ip \"" + escapeForQuotedArg(injectIp) + L"\""
+        + L" --inject-ident \"" + escapeForQuotedArg(injectIdent) + L"\""
         + L" \"" + escapeForQuotedArg(gameExePath.wstring()) + L"\"";
 
     STARTUPINFOW si{};
@@ -1772,6 +1789,8 @@ bool launchProfilePatcherForGame(
         + std::to_wstring(injectPort)
         + L", ip="
         + injectIp
+        + L", ident="
+        + injectIdent
         + L", fallback stats='port|0').");
     return true;
 }
@@ -2044,7 +2063,13 @@ void startBundle()
         injectName = defaultServerName();
     }
 
-    if (!launchProfilePatcherForGame(profile, gameExePath, injectName, injectPort, injectIp))
+    std::wstring injectIdent = trim(getConfigValue(getWindowTextString(g_app.configEditor), L"LOBBY_IDENT"));
+    if (injectIdent.empty())
+    {
+        injectIdent = expectedLobbyIdentForProfile(profile);
+    }
+
+    if (!launchProfilePatcherForGame(profile, gameExePath, injectName, injectPort, injectIp, injectIdent))
     {
         appendLogLine(profileDisplayName(profile) + L" bundle warning: server is running, but patcher launch failed.");
         return;

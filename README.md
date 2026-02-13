@@ -66,6 +66,8 @@ Outputs:
 - Set `ADDR` to your reachable host IP for your target setup.
 - If hosting over internet, forward required ports to the server machine.
 - Same-PC join uses bundle patching path; run as admin.
+- If a client build (for example SteamOS/Proton) cannot see the server on LAN, check `LOBBY_IDENT`/`LOBBY`:
+  those protocol IDs must match your client build/region. Capture `udp.port == 9999` on the client to see which ID it expects.
 
 ## Documentation
 
@@ -86,7 +88,7 @@ Date_Modified  : 09.03.2005 0:37:24
 SHA256         : F9DD86C054878CE6276BEB07C1FD61874F7A1E4BF1F241B084C65B73E24168A7
 ```
 
- - NFSMV (version 1.3 Black Edition)
+ - NFSMW (version 1.3 Black Edition)
 ```
 FileName       : speed.exe
 FullPath       : C:\Program Files (x86)\EA GAMES\Need for Speed Most Wanted\speed.exe
