@@ -936,12 +936,42 @@ int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const soc
 
     if (LooksLikeUg2LanBeacon(buf, len))
     {
+        // Some UG2 builds (e.g. RU) expect "NFSU2" instead of "NFSU2NA".
+        // server.dll does not always respect server.cfg for the beacon ident, so patch the outgoing
+        // LAN beacon to match the configured LOBBY_IDENT.
+        const std::string desiredIdent = TrimAscii(gUg2BeaconLobbyIdent);
+        const std::string currentIdent = ReadBeaconStringField(buf, len, kUg2IdentOffset, kUg2IdentMax);
+        const bool needsIdentPatch = !desiredIdent.empty() && !EqualsIgnoreCase(currentIdent, desiredIdent);
+
+        std::array<char, kUg2LanBeaconLength> patchedBeacon{};
+        const char* effectiveBuf = buf;
+        if (needsIdentPatch)
+        {
+            std::memcpy(patchedBeacon.data(), buf, patchedBeacon.size());
+            WriteAsciiFieldToBuffer(
+                patchedBeacon.data(),
+                patchedBeacon.size(),
+                kUg2IdentOffset,
+                kUg2IdentMax,
+                desiredIdent);
+            effectiveBuf = patchedBeacon.data();
+        }
+
         const bool logOriginalSample = ShouldLogLanDiagSample(&gLanDiagBeaconLogCount, 8);
         if (logOriginalSample)
         {
             LogUg2LanBeaconDiag("hook-send-original", buf, len, false);
+            if (needsIdentPatch)
+            {
+                LogUg2LanBeaconDiag("hook-send-patched", effectiveBuf, len, true);
+            }
         }
-        MirrorUg2BeaconToLoopback(s, buf, len, flags);
+
+        // Mirror patched beacon, so loopback sees exactly what remote LAN clients would see.
+        MirrorUg2BeaconToLoopback(s, effectiveBuf, len, flags);
+
+        // Send patched beacon to the original destination.
+        return gOriginalSendTo(s, effectiveBuf, len, flags, to, tolen);
     }
 
     if (gMwDirCompatEnabled.load())
@@ -1851,16 +1881,12 @@ void RunUg2BeaconEmulator()
     }
 }
 
-void StartUg2BeaconEmulator(bool enabled, const std::string& lobbyIdent, const std::string& serverName, int port)
+void StartUg2BeaconEmulator(bool enabled)
 {
     if (!enabled || gUg2BeaconEmuRunning.load())
     {
         return;
     }
-
-    gUg2BeaconLobbyIdent = TrimAscii(lobbyIdent).empty() ? "NFSU2NA" : TrimAscii(lobbyIdent);
-    gUg2BeaconServerName = TrimAscii(serverName).empty() ? "Test Server" : TrimAscii(serverName);
-    gUg2BeaconPort.store((std::max)(1, (std::min)(65535, port)));
 
     gUg2BeaconEmuRunning.store(true);
     try
@@ -3067,6 +3093,14 @@ int NFSLANWorkerMain(int argc, char* argv[])
     std::string identityLobby;
     int identityPort = 9900;
     ResolveServerIdentityFromConfig(underground2Server, &identityLobby, &identityPort);
+    if (underground2Server)
+    {
+        // Configure UG2 beacon identity before hooks/server threads start, so hooks can safely read it.
+        const std::string resolvedLobby = TrimAscii(identityLobby).empty() ? "NFSU2NA" : TrimAscii(identityLobby);
+        gUg2BeaconLobbyIdent = resolvedLobby;
+        gUg2BeaconServerName = TrimAscii(options.serverName).empty() ? "Test Server" : TrimAscii(options.serverName);
+        gUg2BeaconPort.store((std::max)(1, (std::min)(65535, identityPort)));
+    }
     if (!AcquireServerIdentityLock(identityLobby, identityPort))
     {
         return -1;
@@ -3136,7 +3170,7 @@ int NFSLANWorkerMain(int argc, char* argv[])
 
     if (underground2Server && resolved.ug2BeaconEmulation)
     {
-        StartUg2BeaconEmulator(true, identityLobby, options.serverName, identityPort);
+        StartUg2BeaconEmulator(true);
     }
 
     if (beaconOnlyMode)
