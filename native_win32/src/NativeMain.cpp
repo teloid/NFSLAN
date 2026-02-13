@@ -48,7 +48,7 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
-constexpr wchar_t kUiBuildTag[] = L"2026-02-13-native-ui-identprefix-1";
+constexpr wchar_t kUiBuildTag[] = L"2026-02-13-native-ui-scroll-lanDiag-1";
 constexpr int kMainScrollLineStepPx = 40;
 
 enum ControlId : int
@@ -1595,7 +1595,6 @@ void applyFieldsToConfigEditor()
 
     // Keep worker address fixups always enabled in streamlined path.
     configText = upsertConfigValue(configText, L"ENABLE_GAME_ADDR_FIXUPS", L"1");
-    configText = upsertConfigValue(configText, L"LAN_DIAG", L"0");
 
     setWindowTextString(g_app.configEditor, configText);
 }

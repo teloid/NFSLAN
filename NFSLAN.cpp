@@ -78,7 +78,7 @@ struct WorkerResolvedSettings
 };
 
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-13-worker-mw-caddr-1";
+constexpr const char* kBuildTag = "2026-02-13-worker-mw-dirlen-1";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -971,6 +971,47 @@ bool InstallSendToHook(HMODULE moduleHandle)
     return false;
 }
 
+std::string PreviewAscii(const char* data, int dataLen, int maxChars)
+{
+    if (!data || dataLen <= 0 || maxChars <= 0)
+    {
+        return {};
+    }
+    const int limit = std::min(dataLen, maxChars);
+    std::string out;
+    out.reserve(static_cast<size_t>(limit));
+    for (int i = 0; i < limit; ++i)
+    {
+        const char c = data[i];
+        if (c == '\0')
+        {
+            out += "\\0";
+            continue;
+        }
+        if (c == '\r')
+        {
+            out += "\\r";
+            continue;
+        }
+        if (c == '\n')
+        {
+            out += "\\n";
+            continue;
+        }
+        if (IsAsciiPrintable(c))
+        {
+            out.push_back(c);
+            continue;
+        }
+        out.push_back('.');
+    }
+    if (dataLen > limit)
+    {
+        out += "...";
+    }
+    return out;
+}
+
 int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
 {
     if (!gOriginalSend)
@@ -997,11 +1038,9 @@ int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
 
     const char* body = buf + 12;
     const int bodyLen = len - 12;
-    const bool hasLadr = ContainsSubstringIgnoreCase(body, bodyLen, "ladr=");
-    const bool hasLprt = ContainsSubstringIgnoreCase(body, bodyLen, "lprt=");
     const bool hasIdown = ContainsSubstringIgnoreCase(body, bodyLen, "IDOWN=");
 
-    if (hasIdown || !hasLadr || !hasLprt)
+    if (hasIdown)
     {
         const std::string addr = TrimAscii(gMwDirCompatAddr);
         const int port = gMwDirCompatPort.load();
@@ -1018,16 +1057,19 @@ int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
             patchedBody += std::to_string(port);
             patchedBody += "\n";
 
-            const int totalLen = 12 + static_cast<int>(patchedBody.size()) + 1; // include trailing NUL
-            if (totalLen <= 0xFF)
+            const int maxBodyBytes = len - 12;
+            const int patchedTotalLen = 12 + static_cast<int>(patchedBody.size()) + 1; // include trailing NUL
+            if (patchedTotalLen <= 0xFF && patchedTotalLen <= len && maxBodyBytes > 0)
             {
-                std::array<char, 0x100> out{};
+                // Keep the original message length, otherwise server.dll may attempt to send the
+                // remainder of the original buffer after our patched send (breaking the client).
+                std::vector<char> out(static_cast<size_t>(len), 0);
                 out[0] = '@';
                 out[1] = 'd';
                 out[2] = 'i';
                 out[3] = 'r';
-                // out[4..10] are already 0.
-                out[11] = static_cast<char>(totalLen);
+                // out[4..10] remain 0.
+                out[11] = static_cast<char>(len);
                 std::memcpy(out.data() + 12, patchedBody.data(), patchedBody.size());
                 out[12 + patchedBody.size()] = '\0';
 
@@ -1039,13 +1081,13 @@ int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
 
                 if (gLanDiagEnabled.load())
                 {
-                    std::cout << "NFSLAN: LAN-DIAG MW @dir patched (len=" << totalLen
-                              << ", hadIdown=" << (hasIdown ? 1 : 0)
-                              << ", hadLadr=" << (hasLadr ? 1 : 0)
-                              << ", hadLprt=" << (hasLprt ? 1 : 0) << ").\n";
+                    std::cout << "NFSLAN: LAN-DIAG MW @dir patched (len=" << len
+                              << ", hadIdown=1).\n";
+                    std::cout << "NFSLAN: LAN-DIAG MW @dir original-body: " << PreviewAscii(body, bodyLen, 160) << '\n';
+                    std::cout << "NFSLAN: LAN-DIAG MW @dir patched-body: " << PreviewAscii(out.data() + 12, len - 12, 160) << '\n';
                 }
 
-                return gOriginalSend(s, out.data(), totalLen, flags);
+                return gOriginalSend(s, out.data(), len, flags);
             }
         }
     }
