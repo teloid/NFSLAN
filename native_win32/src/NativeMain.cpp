@@ -49,6 +49,7 @@ constexpr wchar_t kWindowClassName[] = L"NFSLANNativeWin32Window";
 constexpr UINT kWorkerPollTimerId = 100;
 constexpr UINT WM_APP_LOG_CHUNK = WM_APP + 1;
 constexpr wchar_t kUiBuildTag[] = L"2026-02-13-native-ui-identprefix-1";
+constexpr int kMainScrollLineStepPx = 40;
 
 enum ControlId : int
 {
@@ -108,6 +109,10 @@ struct AppState
     std::wstring exePath;
     std::wstring pendingLogLine;
     std::wstring lastEventLine;
+
+    // Main window vertical scrolling (needed for low-resolution screens).
+    int scrollY = 0;
+    int contentHeight = 0;
 };
 
 AppState g_app;
@@ -2297,6 +2302,68 @@ void createLabel(HWND parent, const wchar_t* text, int x, int y, int width, int 
     applyDefaultFontToWindow(label);
 }
 
+int clampInt(int value, int minValue, int maxValue)
+{
+    if (value < minValue)
+    {
+        return minValue;
+    }
+    if (value > maxValue)
+    {
+        return maxValue;
+    }
+    return value;
+}
+
+void syncMainWindowVerticalScroll(HWND window, int requestedPos)
+{
+    if (!window)
+    {
+        return;
+    }
+
+    RECT clientRect{};
+    GetClientRect(window, &clientRect);
+    const int clientHeight = std::max(0, static_cast<int>(clientRect.bottom - clientRect.top));
+
+    int contentHeight = g_app.contentHeight;
+    if (contentHeight <= 0)
+    {
+        contentHeight = clientHeight;
+    }
+    contentHeight = std::max(contentHeight, clientHeight);
+
+    const int maxPos = std::max(0, contentHeight - clientHeight);
+    const int newPos = clampInt(requestedPos, 0, maxPos);
+    const int oldPos = g_app.scrollY;
+
+    if (newPos != oldPos)
+    {
+        g_app.scrollY = newPos;
+
+        const int dy = oldPos - newPos;
+        ScrollWindowEx(
+            window,
+            0,
+            dy,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            SW_ERASE | SW_INVALIDATE | SW_SCROLLCHILDREN);
+        UpdateWindow(window);
+    }
+
+    SCROLLINFO info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    info.nMin = 0;
+    info.nMax = std::max(0, contentHeight - 1);
+    info.nPage = static_cast<UINT>(clientHeight);
+    info.nPos = g_app.scrollY;
+    SetScrollInfo(window, SB_VERT, &info, TRUE);
+}
+
 void createUi(HWND window)
 {
     g_app.window = window;
@@ -2622,6 +2689,10 @@ void createUi(HWND window)
         nullptr);
     applyMonospaceFontToWindow(g_app.logView);
 
+    g_app.scrollY = 0;
+    g_app.contentHeight = y + 132 + rowGap;
+    syncMainWindowVerticalScroll(window, 0);
+
     setUiRunningState(false);
 }
 
@@ -2701,6 +2772,62 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
     case WM_COMMAND:
         return handleCommand(window, wParam);
+
+    case WM_SIZE:
+        syncMainWindowVerticalScroll(window, g_app.scrollY);
+        return 0;
+
+    case WM_VSCROLL:
+    {
+        SCROLLINFO info{};
+        info.cbSize = sizeof(info);
+        info.fMask = SIF_ALL;
+        GetScrollInfo(window, SB_VERT, &info);
+
+        int newPos = info.nPos;
+        switch (LOWORD(wParam))
+        {
+        case SB_TOP:
+            newPos = 0;
+            break;
+        case SB_BOTTOM:
+            newPos = info.nMax;
+            break;
+        case SB_LINEUP:
+            newPos -= kMainScrollLineStepPx;
+            break;
+        case SB_LINEDOWN:
+            newPos += kMainScrollLineStepPx;
+            break;
+        case SB_PAGEUP:
+            newPos -= static_cast<int>(info.nPage);
+            break;
+        case SB_PAGEDOWN:
+            newPos += static_cast<int>(info.nPage);
+            break;
+        case SB_THUMBPOSITION:
+        case SB_THUMBTRACK:
+            newPos = info.nTrackPos;
+            break;
+        case SB_ENDSCROLL:
+        default:
+            break;
+        }
+
+        syncMainWindowVerticalScroll(window, newPos);
+        return 0;
+    }
+
+    case WM_MOUSEWHEEL:
+    {
+        const int delta = static_cast<short>(HIWORD(wParam));
+        const int ticks = delta / WHEEL_DELTA;
+        if (ticks != 0)
+        {
+            syncMainWindowVerticalScroll(window, g_app.scrollY - ticks * kMainScrollLineStepPx * 3);
+        }
+        return 0;
+    }
 
     case WM_ERASEBKGND:
     {
@@ -2926,7 +3053,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
         0,
         kWindowClassName,
         windowTitle.c_str(),
-        WS_OVERLAPPEDWINDOW,
+        WS_OVERLAPPEDWINDOW | WS_VSCROLL | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         1040,
