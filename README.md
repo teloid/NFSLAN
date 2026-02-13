@@ -2,27 +2,26 @@
 
 Standalone Need for Speed Underground 2 + Most Wanted LAN server launcher for Windows, with same-PC join support.
 
+What this is:
+
+- Runs the official `server.dll` LAN server *outside the game*.
+- "Bundle" mode launches the server and applies a small in-memory patch to the game EXE so you can join the server from the same PC.
+
 ## AI-enhanced release note
 
 This repository version is AI-enhanced and focused on one goal:
 
 `Run the LAN server outside the game, and still join from the same PC.`
 
-## Scope of this release
-
-- Native Win32 UI (no Qt runtime required).
-- Bundle mode: starts worker + launches the appropriate game patcher.
-- Live `Events` + `Raw logs` panes in UI for runtime monitoring.
-- Manual `Start` / `Stop` kept for direct worker control.
-- Simplified UI and docs for fast setup.
 
 ## Quick start (recommended)
 
 1. Run `NFSLAN-GUI.exe` as Administrator.
 2. Select game mode (Underground 2 or Most Wanted).
 3. Enter server name.
-4. Pick `Game folder` (folder that contains the game EXE + `server.dll` + `server.cfg`).
+4. Pick `Game folder` (folder that contains the game EXE + `server.dll` + `server.cfg`). (U2: `SPEED2.EXE`, MW: `speed.exe`)
 5. Press `Start Bundle (Recommended)`.
+6. The game should launch patched. Open the LAN server list and join.
 
 That is the primary workflow.
 
@@ -66,8 +65,33 @@ Outputs:
 - Set `ADDR` to your reachable host IP for your target setup.
 - If hosting over internet, forward required ports to the server machine.
 - Same-PC join uses bundle patching path; run as admin.
-- If a client build (for example SteamOS/Proton) cannot see the server on LAN, check `LOBBY_IDENT`/`LOBBY`:
-  those protocol IDs must match your client build/region. Capture `udp.port == 9999` on the client to see which ID it expects.
+
+## `LOBBY_IDENT` / `LOBBY` (Important)
+
+`LOBBY_IDENT` and `LOBBY` are **protocol identifiers**, not the visible server name.
+
+They must match what your client build expects, otherwise the game may hide the server in the LAN list.
+
+- `NFSU2NA` vs `NFSU2`: likely different regional builds (`NA` is almost certainly "North America"). Some RU/EU builds expect `NFSU2` (no `NA`).
+- `NFSMWNA` vs `NFSMW`: Most Wanted often seems less strict, but you should still keep them consistent.
+
+Examples for `server.cfg`:
+
+```ini
+# Underground 2 (common NA/US builds)
+LOBBY_IDENT=NFSU2NA
+LOBBY=NFSU2NA
+
+# Underground 2 (some RU/EU builds)
+LOBBY_IDENT=NFSU2
+LOBBY=NFSU2
+
+# Most Wanted (either may work depending on build)
+LOBBY_IDENT=NFSMWNA
+LOBBY=NFSMWNA
+```
+
+If a client build cannot see the server, capture `udp.port == 9999` on the client and look for the ASCII ident in the discovery/beacon payload. Use that value for `LOBBY_IDENT`/`LOBBY`.
 
 ## Documentation
 
