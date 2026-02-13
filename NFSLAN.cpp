@@ -78,7 +78,7 @@ struct WorkerResolvedSettings
 };
 
 constexpr int kDefaultLanDiscoveryPort = 9999;
-constexpr const char* kBuildTag = "2026-02-13-worker-mw-dir-diag-1";
+constexpr const char* kBuildTag = "2026-02-13-worker-mw-dir-addrport-1";
 constexpr size_t kUg2LanBeaconLength = 0x180;
 constexpr size_t kUg2IdentOffset = 0x08;
 constexpr size_t kUg2IdentMax = 0x08;
@@ -952,32 +952,34 @@ int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const soc
             const char* body = view.body;
             const int bodyLen = view.bodyLen;
             const bool hasIdown = ContainsSubstringIgnoreCase(body, bodyLen, "IDOWN=");
-            const bool hasLadr = ContainsSubstringIgnoreCase(body, bodyLen, "ladr=");
-            const bool hasLprt = ContainsSubstringIgnoreCase(body, bodyLen, "lprt=");
+            const bool hasDown = hasIdown || ContainsSubstringIgnoreCase(body, bodyLen, "DOWN=");
+            const bool hasAddr = ContainsSubstringIgnoreCase(body, bodyLen, "ADDR=");
+            const bool hasPort = ContainsSubstringIgnoreCase(body, bodyLen, "PORT=");
 
             if (ShouldLogLanDiagSample(&gLanDiagMwDirLogCount, 80))
             {
                 const std::string peer = DescribeSendToTarget(s, to, tolen);
                 std::cout << "NFSLAN: LAN-DIAG MW @dir outgoing (sendto) peer=" << (peer.empty() ? "?" : peer)
                           << " len=" << len
-                          << " hadIdown=" << (hasIdown ? "1" : "0")
-                          << " hasLadr=" << (hasLadr ? "1" : "0")
-                          << " hasLprt=" << (hasLprt ? "1" : "0")
+                          << " hasDown=" << (hasDown ? "1" : "0")
+                          << " hasAddr=" << (hasAddr ? "1" : "0")
+                          << " hasPort=" << (hasPort ? "1" : "0")
                           << " body=" << PreviewAscii(body, bodyLen, 160) << '\n';
             }
 
-            if (hasIdown || !hasLadr || !hasLprt)
+            // Only patch explicit "down" responses; do not touch normal directory replies.
+            if (hasDown)
             {
                 const std::string addr = TrimAscii(gMwDirCompatAddr);
                 const int port = gMwDirCompatPort.load();
                 if (!addr.empty() && port > 0 && port <= 65535)
                 {
                     std::string patchedBody;
-                    patchedBody.reserve(96);
-                    patchedBody += "ladr=";
+                    patchedBody.reserve(128);
+                    patchedBody += "ADDR=";
                     patchedBody += addr;
                     patchedBody += "\n";
-                    patchedBody += "lprt=";
+                    patchedBody += "PORT=";
                     patchedBody += std::to_string(port);
                     patchedBody += "\n";
 
@@ -997,14 +999,14 @@ int WSAAPI HookedSendTo(SOCKET s, const char* buf, int len, int flags, const soc
 
                         if (!gMwDirCompatAnnounced.exchange(true))
                         {
-                            std::cout << "NFSLAN: Installed MW @dir compatibility response (forcing ladr/lprt to "
+                            std::cout << "NFSLAN: Installed MW @dir compatibility response (forcing ADDR/PORT to "
                                       << addr << ":" << port << ").\n";
                         }
 
                         if (gLanDiagEnabled.load())
                         {
                             std::cout << "NFSLAN: LAN-DIAG MW @dir patched (api=sendto, len=" << len
-                                      << ", hadIdown=" << (hasIdown ? "1" : "0") << ").\n";
+                                      << ", hasDown=1).\n";
                             std::cout << "NFSLAN: LAN-DIAG MW @dir patched-body: " << PreviewAscii(out.data() + 12, len - 12, 160) << '\n';
                         }
 
@@ -1184,34 +1186,36 @@ int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
     const char* body = view.body;
     const int bodyLen = view.bodyLen;
     const bool hasIdown = ContainsSubstringIgnoreCase(body, bodyLen, "IDOWN=");
-    const bool hasLadr = ContainsSubstringIgnoreCase(body, bodyLen, "ladr=");
-    const bool hasLprt = ContainsSubstringIgnoreCase(body, bodyLen, "lprt=");
+    const bool hasDown = hasIdown || ContainsSubstringIgnoreCase(body, bodyLen, "DOWN=");
+    const bool hasAddr = ContainsSubstringIgnoreCase(body, bodyLen, "ADDR=");
+    const bool hasPort = ContainsSubstringIgnoreCase(body, bodyLen, "PORT=");
 
     if (ShouldLogLanDiagSample(&gLanDiagMwDirLogCount, 80))
     {
         const std::string peer = DescribeSocketPeer(s);
         std::cout << "NFSLAN: LAN-DIAG MW @dir outgoing (send) peer=" << (peer.empty() ? "?" : peer)
                   << " len=" << len
-                  << " hadIdown=" << (hasIdown ? "1" : "0")
-                  << " hasLadr=" << (hasLadr ? "1" : "0")
-                  << " hasLprt=" << (hasLprt ? "1" : "0")
+                  << " hasDown=" << (hasDown ? "1" : "0")
+                  << " hasAddr=" << (hasAddr ? "1" : "0")
+                  << " hasPort=" << (hasPort ? "1" : "0")
                   << " body=" << PreviewAscii(body, bodyLen, 160) << '\n';
     }
 
-    if (hasIdown || !hasLadr || !hasLprt)
+    // Only patch explicit "down" responses; do not touch normal directory replies.
+    if (hasDown)
     {
         const std::string addr = TrimAscii(gMwDirCompatAddr);
         const int port = gMwDirCompatPort.load();
         if (!addr.empty() && port > 0 && port <= 65535)
         {
             // Minimal directory response to keep MW clients from treating the server as "down".
-            // Most Wanted client expects ladr/lprt to be present.
+            // Keep the structure stable; modern clients mainly need ADDR/PORT.
             std::string patchedBody;
-            patchedBody.reserve(96);
-            patchedBody += "ladr=";
+            patchedBody.reserve(128);
+            patchedBody += "ADDR=";
             patchedBody += addr;
             patchedBody += "\n";
-            patchedBody += "lprt=";
+            patchedBody += "PORT=";
             patchedBody += std::to_string(port);
             patchedBody += "\n";
 
@@ -1231,14 +1235,14 @@ int WSAAPI HookedSend(SOCKET s, const char* buf, int len, int flags)
 
                 if (!gMwDirCompatAnnounced.exchange(true))
                 {
-                    std::cout << "NFSLAN: Installed MW @dir compatibility response (forcing ladr/lprt to "
+                    std::cout << "NFSLAN: Installed MW @dir compatibility response (forcing ADDR/PORT to "
                               << addr << ":" << port << ").\n";
                 }
 
                 if (gLanDiagEnabled.load())
                 {
                     std::cout << "NFSLAN: LAN-DIAG MW @dir patched (len=" << len
-                              << ", hadIdown=" << (hasIdown ? "1" : "0") << ").\n";
+                              << ", hasDown=1).\n";
                     std::cout << "NFSLAN: LAN-DIAG MW @dir patched-body: " << PreviewAscii(out.data() + 12, len - 12, 160) << '\n';
                 }
 
