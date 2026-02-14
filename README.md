@@ -121,3 +121,14 @@ Size_Bytes     : 6029312
 Date_Modified  : 25.11.2023 16:12:09
 SHA256         : 80774C2E5D619B4F120B48D4462896FD504C263399D203A238769CFFDE1D253C
 ```
+
+---
+
+## P.S. Online Gameplay (NFSOR)
+
+> **P.S.** I do not know what was the point of this project, maybe to give more flexibility when creating local LAN servers or maybe just as a proof of concept.
+>
+> If you want online gameplay for Underground 2 check out **NFSOR**: A official online revive project for PS2 and PC.
+>
+> - Discord: https://discord.gg/BB27nMjSCp (they now have more NFS Games)
+> - Reddit: https://www.reddit.com/user/NFSOR/
