@@ -51,7 +51,7 @@ void printUsage(const char* program) {
         "  --discover [secs]    Do not serve; listen for other servers and print\n"
         "                       what is on the LAN (default: 5 seconds)\n"
         "  --no-lobby           Do not listen on the lobby port at all\n"
-        "  --capture <path>     Append the lobby handshake hex dump to a file.\n"
+        "  --ack-unknown        Acknowledge lobby verbs with no handler, so a client keeps\n                       walking its state machine and reveals the next request\n  --capture <path>     Append the lobby handshake hex dump to a file.\n"
         "                       Use this to reverse the session protocol: point a\n"
         "                       real client at the server and read the transcript.\n"
         "  --verbose            Log every packet decision\n"
@@ -73,6 +73,8 @@ struct Options {
     int discoverSeconds = 5;
     bool showHelp = false;
     bool runLobby = true;
+    bool captureOnly = false;
+    bool ackUnknown = false;
     std::string capturePath;
 
     // Set when the flag was given, so CLI wins over the config file.
@@ -172,6 +174,10 @@ bool parseArguments(int argc, char** argv, Options* options, std::string* error)
             }
         } else if (arg == "--no-lobby") {
             options->runLobby = false;
+        } else if (arg == "--ack-unknown") {
+            options->ackUnknown = true;
+        } else if (arg == "--capture-only") {
+            options->captureOnly = true;
         } else if (arg == "--capture") {
             if (!needsValue(i, "--capture")) return false;
             options->capturePath = argv[++i];
@@ -323,9 +329,14 @@ int runServer(const nfslan::ServerConfig& config, const Options& options) {
 
     nfslan::LobbySettings lobbySettings;
     lobbySettings.port = config.lobbyPort;
-    lobbySettings.mode = nfslan::LobbyMode::Capture;
+    lobbySettings.mode = options.captureOnly ? nfslan::LobbyMode::Capture : nfslan::LobbyMode::Serve;
     lobbySettings.capturePath = options.capturePath;
     lobbySettings.verbose = config.verbose;
+    // The client reconnects to whatever we name in the "@dir" reply, so this has
+    // to be an address it can reach — the same one we advertise.
+    lobbySettings.redirectAddress = nfslan::parseIpv4(advertised).value_or(0);
+    lobbySettings.redirectPort = config.lobbyPort;
+    lobbySettings.ackUnknownTags = options.ackUnknown;
 
     nfslan::LobbyService lobby(lobbySettings, logLine);
     bool lobbyRunning = false;
@@ -345,13 +356,13 @@ int runServer(const nfslan::ServerConfig& config, const Options& options) {
     std::printf("  discovery   UDP %u, announcing every %d ms%s\n", config.discoveryPort,
                 config.beaconIntervalMs, config.announceToBroadcast ? "" : " (queries only)");
     if (lobbyRunning) {
-        std::printf("  lobby       TCP %u, capture mode%s\n", config.lobbyPort,
-                    options.capturePath.empty() ? ""
-                                                : (" -> " + options.capturePath).c_str());
+        std::printf("  lobby       TCP %u, %s%s\n", config.lobbyPort,
+                    options.captureOnly ? "capture only (no replies)" : "answering handshake",
+                    options.capturePath.empty() ? "" : (" -> " + options.capturePath).c_str());
         std::printf(
-            "\nNote: the lobby protocol is not implemented yet, so a client will reach\n"
-            "'connecting to lobby' and stop there. Everything it sends is logged below,\n"
-            "which is what the protocol work needs.\n");
+            "\nNote: the handshake is answered up to the point where the client asks to\n"
+            "authenticate; the persona/room/game flow after that is not implemented, so a\n"
+            "client gets past 'connecting to lobby' but cannot start a race yet.\n");
     } else {
         std::printf("  lobby       not listening (clients will hang on connect)\n");
     }

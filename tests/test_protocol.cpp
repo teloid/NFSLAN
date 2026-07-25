@@ -9,6 +9,7 @@
 #include "nfslan/beacon.hpp"
 #include "nfslan/config.hpp"
 #include "nfslan/net.hpp"
+#include "nfslan/titan.hpp"
 
 namespace {
 
@@ -268,6 +269,120 @@ void testAddressHelpers() {
     check(!nfslan::broadcastAddresses().empty(), "broadcast address list is never empty");
 }
 
+void testTitanFraming() {
+    std::printf("titan: 12-byte big-endian header\n");
+
+    // Tags are 4CCs whose bytes appear on the wire in reading order.
+    checkEqualInt(nfslan::kTagDirectory, 0x40646972, "'@dir' packs to 0x40646972");
+    checkEqualInt(nfslan::kTagTicket, 0x40746963, "'@tic' packs to 0x40746963");
+    checkEqualInt(nfslan::kTagPing, 0x7E706E67, "'~png' packs to 0x7E706E67");
+    checkEqualStr(nfslan::titanTagToString(nfslan::kTagDirectory), "@dir", "tag renders back");
+
+    nfslan::TitanMessage message;
+    message.tag = nfslan::kTagDirectory;
+    message.code = nfslan::kCodeSuccess;
+    message.body = "ADDR=192.168.1.10\tPORT=9900";
+
+    const auto encoded = nfslan::encodeTitan(message);
+
+    // Header must be big-endian, and the length counts the header and the NUL.
+    check(encoded[0] == '@' && encoded[1] == 'd' && encoded[2] == 'i' && encoded[3] == 'r',
+          "tag is written in ASCII order");
+    checkEqualInt(encoded[8], 0, "length byte 0 (big-endian)");
+    checkEqualInt(encoded[9], 0, "length byte 1");
+    checkEqualInt(encoded[10], 0, "length byte 2");
+    checkEqualInt(encoded[11], 12 + 27 + 1, "length byte 3 = 12 + body + NUL");
+    checkEqualInt(static_cast<long long>(encoded.size()), 12 + 27 + 1, "frame size matches length");
+    checkEqualInt(encoded.back(), 0, "body is NUL-terminated on the wire");
+
+    const auto decoded = nfslan::decodeTitan(encoded);
+    check(decoded.has_value(), "frame decodes");
+    if (decoded) {
+        checkEqualInt(decoded->tag, nfslan::kTagDirectory, "tag round trips");
+        checkEqualInt(decoded->code, 0, "code round trips");
+        checkEqualStr(decoded->body, "ADDR=192.168.1.10\tPORT=9900",
+                      "body round trips without the NUL");
+    }
+
+    // An empty body is a 12-byte frame — this is the "@tic" reply that makes a
+    // client disable encryption, so the size matters.
+    nfslan::TitanMessage bare;
+    bare.tag = nfslan::kTagTicket;
+    const auto bareEncoded = nfslan::encodeTitan(bare);
+    checkEqualInt(static_cast<long long>(bareEncoded.size()), 12, "empty body is a 12-byte frame");
+    check(bareEncoded.size() != 0x54, "reply is not 84 bytes, so the client drops encryption");
+}
+
+void testTitanPartialAndRejection() {
+    std::printf("titan: partial frames and non-Titan data\n");
+
+    nfslan::TitanMessage message;
+    message.tag = nfslan::kTagDirectory;
+    message.body = "ADDR=192.168.1.10\tPORT=9900";
+    const auto encoded = nfslan::encodeTitan(message);
+
+    // A short read must not decode: TCP delivers frames in pieces.
+    check(!nfslan::decodeTitan(encoded.data(), 8).has_value(), "8 bytes is not a frame");
+    check(!nfslan::decodeTitan(encoded.data(), encoded.size() - 1).has_value(),
+          "one byte short does not decode");
+    check(nfslan::decodeTitan(encoded.data(), encoded.size()).has_value(),
+          "the complete frame does decode");
+
+    // The length field is how a real server tells Titan from the HTTP that is
+    // multiplexed onto the same port.
+    const auto claimed = nfslan::titanFrameLength(encoded.data(), encoded.size());
+    check(claimed.has_value(), "frame length is readable from the header");
+    if (claimed) {
+        checkEqualInt(*claimed, static_cast<long long>(encoded.size()), "claimed length is exact");
+    }
+
+    const std::string http = "GET /sm/status HTTP/1.0\r\n\r\n";
+    const auto* httpBytes = reinterpret_cast<const std::uint8_t*>(http.data());
+    check(!nfslan::looksLikeTitan(httpBytes, http.size()), "an HTTP request is not Titan");
+
+    std::vector<std::uint8_t> absurd(12, 0xFF);  // claims a ~4 GB frame
+    check(!nfslan::looksLikeTitan(absurd.data(), absurd.size()), "an absurd length is not Titan");
+}
+
+void testTagFields() {
+    std::printf("titan: TagField bodies\n");
+
+    const std::string body = nfslan::tagFieldBuild({{"ADDR", "192.168.1.10"}, {"PORT", "9900"}});
+    checkEqualStr(body, "ADDR=192.168.1.10\tPORT=9900", "pairs are TAB-separated");
+
+    const auto addr = nfslan::tagFieldFind(body, "ADDR");
+    check(addr.has_value(), "ADDR is found");
+    if (addr) {
+        checkEqualStr(*addr, "192.168.1.10", "ADDR value parses");
+    }
+    const auto port = nfslan::tagFieldFind(body, "PORT");
+    check(port.has_value(), "PORT is found");
+    if (port) {
+        checkEqualStr(*port, "9900", "PORT value parses");
+    }
+
+    // Key matching is case-insensitive in real parsers.
+    check(nfslan::tagFieldFind(body, "addr").has_value(), "keys match case-insensitively");
+    check(!nfslan::tagFieldFind(body, "NOPE").has_value(), "absent key returns nothing");
+
+    // A key must not match a suffix of a longer key.
+    const std::string tricky = "XADDR=1.2.3.4\tPORT=1";
+    check(!nfslan::tagFieldFind(tricky, "ADDR").has_value(),
+          "ADDR does not match inside XADDR");
+
+    // Real bodies also arrive newline-separated; any byte under 0x20 separates.
+    const auto fromNewlines = nfslan::tagFieldFind("ADDR=10.0.0.1\nPORT=9900\n", "PORT");
+    check(fromNewlines.has_value(), "newline-separated bodies still parse");
+    if (fromNewlines) {
+        checkEqualStr(*fromNewlines, "9900", "value stops at the separator");
+    }
+
+    // The client reads "DIRECT" to decide whether to skip the redirect, so a
+    // reply that means "reconnect here" must not contain it.
+    check(!nfslan::tagFieldFind(body, "DIRECT").has_value(),
+          "redirect reply carries no DIRECT key");
+}
+
 }  // namespace
 
 int main() {
@@ -283,6 +398,9 @@ int main() {
     testConfigParsing();
     testConfigDefaultsAndWarnings();
     testAddressHelpers();
+    testTitanFraming();
+    testTitanPartialAndRejection();
+    testTagFields();
 
     std::printf("\n%d checks, %d failures\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;

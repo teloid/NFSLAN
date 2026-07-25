@@ -144,7 +144,76 @@ the Windows worker's game patcher, which pokes the client's discovery table
 (`+0x19C` on a 0x1A4-byte row; manager singleton at RVA `0x004B7E28` for U2,
 `0x005C3878` for MW).
 
-## Lobby / session (TCP 9900) — partly mapped
+## Lobby / session (TCP 9900) — handshake works, session does not
+
+The framing and the connect handshake are implemented and **verified against a
+real Underground 2 client** (retail 1.2, `SKU=14705`, running under Proton on a
+Steam Deck, talking to `nfslan-server` on macOS). The client gets past
+"connecting to lobby" and sits on the LAN Main screen. Entering the lobby proper
+still fails, because the persona/room/game layer is not implemented.
+
+### The exchange, as observed on the wire
+
+```
+client -> @tic  "RC4+MD5-V2"
+server -> @tic  code 0, empty body          # not 84 bytes, so crypto stays off
+client -> @dir  REGN=NA CLST=126890 NETV=40 FROM=US LANG=EN
+                MID=$b00c9da60aaf PROD=nfs-pc-2005
+                VERS="pc/1.2-Feb  9 2005" SLUS=SLUS_21065 SKU=14705
+server -> @dir  code 0, ADDR=<server ip>\tPORT=9900
+                                            # client DISCONNECTS here
+                                            # and reconnects to that address
+client -> addr  ADDR=<its own ip> PORT=<its own port>
+server -> addr  code 0
+client -> skey  SKEY=$5075626c6963204b6579   # hex for "Public Key"
+server -> skey  code 0
+client -> news  NAME=7
+client -> sele  MYGAME=1 STATS=5000 ASYNC=1 MESGS=1
+client -> auth  <the same parameter block as @dir>
+```
+
+Two things worth knowing before implementing further:
+
+- **The client's own request bodies use `\n` separators**, even though the spec
+  and stock servers emit TAB. The parser treats any byte below 0x21 as a
+  separator, so both work — but emit TAB to stay faithful.
+- **The redirect is mandatory and it really does reconnect.** Answering `@dir`
+  with `ADDR=0` (or not answering) is what produces the classic "server is down"
+  behaviour, and is the same failure the Windows worker patches around for Most
+  Wanted by rewriting `DOWN=`/`IDOWN=` bodies.
+
+### What the client reads out of each reply
+
+From the U2 client's state machine (`SPEEDEXE/SPEEDEXE.c` around 615929-615990),
+each of these reads has a **default** argument, so a missing key yields the
+default rather than a hard failure — which is why bare `code 0` acks get the
+client as far as they do:
+
+| Reply | Client reads |
+| --- | --- |
+| `auth` | a 20-byte (0x14) string field, and an address field |
+| `sele` | a number, then `SLOTS`, then `STATS` |
+| `pers` | a 16-byte (0x10) name field |
+| `acct` | nothing; success just advances the state to `acct` |
+| `snap` | decrements a pending counter, reads one number |
+
+Tags beginning `+` (e.g. `+usr`, `+gam`, `+rom`) are async notifications the
+server pushes; tags beginning `$` are a second async class.
+
+### Finishing this
+
+The remaining work is the persona/room/game layer: replying to `auth` with the
+fields above, then handling persona selection, room listing, and game creation
+(`+gam`/`+usr`/`+rom` pushes). Server-side handlers are documented in
+`SERVER/U2/server.dll.c` — the create-game path at 19809-20191 is the most
+useful entry point, including its error vocabulary (`maut`, `ingm`, `urom`,
+`filt`, `dupl`, `nown`).
+
+`nfslan-server --ack-unknown` is the tool for this: it acknowledges any tag it
+has no handler for, so the client keeps walking its state machine and reveals
+the next request instead of stalling. Pair it with `--capture` for hex dumps.
+
+## Titan framing reference
 
 Messages use EA's "Titan" framing: a 12-byte header, **big-endian**, then an
 ASCII body.

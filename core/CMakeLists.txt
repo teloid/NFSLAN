@@ -9,6 +9,7 @@ add_library(nfslan-core STATIC
     src/config.cpp
     src/discovery.cpp
     src/lobby.cpp
+    src/titan.cpp
 )
 
 target_include_directories(nfslan-core PUBLIC
