@@ -47,7 +47,7 @@ void testBeaconRoundTrip() {
 
     checkEqualInt(static_cast<long long>(packet.size()), 0x180, "beacon is 0x180 bytes");
     check(packet[0] == 'g' && packet[1] == 'E' && packet[2] == 'A', "magic is 'gEA'");
-    checkEqualInt(packet[3], 0x03, "byte 3 is 0x03");
+    checkEqualInt(packet[3], 3, "byte 3 is the advertise interval (stock sends 3)");
     check(nfslan::isBeacon(packet.data(), packet.size()), "encoded packet is a beacon");
     check(!nfslan::isDiscoveryQuery(packet.data(), packet.size()), "beacon is not a query");
 
@@ -56,13 +56,49 @@ void testBeaconRoundTrip() {
     if (decoded) {
         checkEqualStr(decoded->ident, "NFSU2NA", "ident round trips");
         checkEqualStr(decoded->name, "Teloid's Garage", "name round trips");
-        checkEqualStr(decoded->stats, "9900|0", "stats carry '<port>|0'");
+        checkEqualStr(decoded->stats, "9900|0", "stats carry '<port>|<players>'");
         checkEqualStr(decoded->transport, "TCP:~1:1024\tUDP:~1:1024", "transport caps round trip");
         check(decoded->advertisedPort().has_value(), "advertised port parses");
         if (decoded->advertisedPort()) {
             checkEqualInt(*decoded->advertisedPort(), 9900, "advertised port is 9900");
         }
+        check(decoded->playerCount().has_value(), "player count parses");
+        if (decoded->playerCount()) {
+            checkEqualInt(*decoded->playerCount(), 0, "empty server reports 0 players");
+        }
+        check(!decoded->isWithdrawal(), "a live beacon is not a withdrawal");
     }
+
+    // The interval byte is not a type tag: stock receivers never validate it, so
+    // a beacon with a different interval must still decode.
+    const auto slowBeacon = nfslan::encodeBeacon("NFSU2NA", "Slow", 9900, 2, "TCP:~1:1024", 30);
+    check(nfslan::isBeacon(slowBeacon.data(), slowBeacon.size()),
+          "beacon with interval 30 is still a beacon");
+    const auto slowDecoded = nfslan::decodeBeacon(slowBeacon.data(), slowBeacon.size());
+    check(slowDecoded.has_value(), "non-stock interval still decodes");
+    if (slowDecoded) {
+        checkEqualInt(slowDecoded->advertiseInterval, 30, "interval round trips");
+        if (slowDecoded->playerCount()) {
+            checkEqualInt(*slowDecoded->playerCount(), 2, "player count round trips");
+        }
+    }
+}
+
+void testWithdrawal() {
+    std::printf("beacon: withdrawal (goodbye) beacon\n");
+
+    const auto packet = nfslan::encodeWithdrawal("NFSU2NA", "Going Away", 9900);
+    check(nfslan::isBeacon(packet.data(), packet.size()), "withdrawal is still a valid beacon");
+
+    const auto decoded = nfslan::decodeBeacon(packet.data(), packet.size());
+    check(decoded.has_value(), "withdrawal decodes");
+    if (decoded) {
+        // An empty transport field is what tells receivers to drop the row now.
+        check(decoded->transport.empty(), "transport field is empty");
+        check(decoded->isWithdrawal(), "recognised as a withdrawal");
+        checkEqualStr(decoded->name, "Going Away", "name still present so the row can be matched");
+    }
+    checkEqualInt(packet[0x108], 0, "transport field starts with NUL on the wire");
 }
 
 void testBeaconFieldOffsets() {
@@ -126,13 +162,17 @@ void testBeaconRejection() {
     wrongMagic[0] = 'X';
     check(!nfslan::isBeacon(wrongMagic.data(), wrongMagic.size()), "bad magic is rejected");
 
-    auto wrongType = nfslan::encodeBeacon("NFSU2NA", "x", 9900);
-    wrongType[3] = 0x01;
-    check(!nfslan::isBeacon(wrongType.data(), wrongType.size()), "bad type byte is rejected");
+    // A nameless packet is what stock receivers ignore, and it is how a query is
+    // distinguished from an announcement.
+    auto noName = nfslan::encodeBeacon("NFSU2NA", "x", 9900);
+    noName[nfslan::kBeaconNameOffset] = 0;
+    check(!nfslan::isBeacon(noName.data(), noName.size()), "beacon with no name is rejected");
 
-    auto wrongIdent = nfslan::encodeBeacon("NFSU2NA", "x", 9900);
-    std::memcpy(wrongIdent.data() + 0x08, "XXXX", 4);
-    check(!nfslan::isBeacon(wrongIdent.data(), wrongIdent.size()), "non-NFS ident is rejected");
+    // An unfamiliar ident must still parse: idents vary by region and by mod,
+    // and rejecting them would hide servers the game itself would list.
+    auto foreignIdent = nfslan::encodeBeacon("NFSPS2X", "x", 9900);
+    check(nfslan::isBeacon(foreignIdent.data(), foreignIdent.size()),
+          "unfamiliar ident is still accepted");
 }
 
 void testIdentRewrite() {
@@ -208,11 +248,11 @@ void testConfigDefaultsAndWarnings() {
 void testAddressHelpers() {
     std::printf("net: address helpers\n");
 
-    const auto parsed = nfslan::parseIpv4("192.168.1.98");
+    const auto parsed = nfslan::parseIpv4("192.168.1.20");
     check(parsed.has_value(), "dotted quad parses");
     if (parsed) {
-        checkEqualInt(*parsed, 0xC0A80162, "parsed to host byte order");
-        checkEqualStr(nfslan::ipv4ToString(*parsed), "192.168.1.98", "round trips to string");
+        checkEqualInt(*parsed, 0xC0A80114, "parsed to host byte order");
+        checkEqualStr(nfslan::ipv4ToString(*parsed), "192.168.1.20", "round trips to string");
     }
 
     check(!nfslan::parseIpv4("not.an.ip").has_value(), "garbage is rejected");
@@ -234,6 +274,7 @@ int main() {
     std::printf("NFSLAN protocol tests\n\n");
 
     testBeaconRoundTrip();
+    testWithdrawal();
     testBeaconFieldOffsets();
     testBeaconTruncationAndPadding();
     testDiscoveryQuery();

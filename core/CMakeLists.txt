@@ -8,6 +8,7 @@ add_library(nfslan-core STATIC
     src/beacon.cpp
     src/config.cpp
     src/discovery.cpp
+    src/lobby.cpp
 )
 
 target_include_directories(nfslan-core PUBLIC

@@ -62,9 +62,13 @@ public:
     // The beacon this service currently sends. Rebuilt when settings change.
     const DiscoverySettings& settings() const { return settings_; }
 
+    // Goes into the beacon's stats field, which clients show as the population.
+    void setPlayerCount(int players) { playerCount_.store(players < 0 ? 0 : players); }
+
 private:
     void run();
     void sendAnnouncements();
+    void sendWithdrawal();
     void handleDatagram(const Datagram& datagram);
 
     DiscoverySettings settings_;
@@ -74,6 +78,7 @@ private:
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stopRequested_{false};
+    std::atomic<int> playerCount_{0};
 
     DiscoveryStats stats_;
     std::string lastError_;

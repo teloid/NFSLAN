@@ -1,16 +1,25 @@
 // Underground 2 / Most Wanted LAN discovery beacon codec.
 //
-// Wire format (0x180 bytes, UDP port 9999), as modelled by the Windows worker
-// in NFSLAN.cpp and confirmed against captured traffic:
+// Wire format (0x180 bytes, UDP port 9999). Field widths come from the stock
+// receiver's own stack layout, which partitions the packet exactly:
+// 4 + 4 + 0x20 + 0x20 + 0xC0 + 0x78 = 0x180.
 //
-//   0x000  'g' 'E' 'A' 0x03      magic; byte 3 is 0x03 on a beacon
-//   0x008  ident, 8 bytes        ASCII, NUL-padded: "NFSU2NA", "NFSMWNA", ...
-//                                on a *query* byte 0x008 is '?' instead
-//   0x028  server name, 32 bytes ASCII, NUL-padded
-//   0x048  stats, up to 0xC0     ASCII "<port>|<flags>", e.g. "9900|0"
-//   0x108  transport, 0x40       ASCII "TCP:~1:1024\tUDP:~1:1024"
+//   0x000  3     'g' 'E' 'A'          magic
+//   0x003  1     re-advertise interval in seconds (stock sends 3). NOT a
+//                message-type magic: stock receivers never validate this byte,
+//                and it drives row expiry as 1000 + interval * 2000 ms.
+//   0x004  4     id word (zero in stock beacons)
+//   0x008  0x20  ident, ASCII + NUL   "NFSU2NA", "NFSMWNA", ...
+//                                     on a *query* this field is just "?"
+//   0x028  0x20  server name, ASCII + NUL
+//   0x048  0xC0  stats, ASCII         "<port>|<players>", e.g. "9900|0"
+//   0x108  0x78  transport, ASCII     "TCP:~1:1024\tUDP:~1:1024"
 //
 // Everything outside those fields stays zero, which is what stock servers send.
+// An EMPTY transport field is a withdraw signal: receivers expire the row at
+// once, and stock servers send exactly that as a goodbye on shutdown.
+//
+// Comparisons on ident/name/stats are case-insensitive in stock receivers.
 #pragma once
 
 #include <array>
@@ -22,14 +31,21 @@
 namespace nfslan {
 
 constexpr std::size_t kBeaconLength = 0x180;
+constexpr std::size_t kBeaconIntervalOffset = 0x03;
+constexpr std::size_t kBeaconIdOffset = 0x04;
 constexpr std::size_t kBeaconIdentOffset = 0x08;
-constexpr std::size_t kBeaconIdentMax = 0x08;
+constexpr std::size_t kBeaconIdentMax = 0x20;
 constexpr std::size_t kBeaconNameOffset = 0x28;
 constexpr std::size_t kBeaconNameMax = 0x20;
 constexpr std::size_t kBeaconStatsOffset = 0x48;
 constexpr std::size_t kBeaconStatsMax = 0xC0;
 constexpr std::size_t kBeaconTransportOffset = 0x108;
-constexpr std::size_t kBeaconTransportMax = 0x40;
+constexpr std::size_t kBeaconTransportMax = 0x78;
+
+// What stock servers put in the interval byte. Row expiry on the receiving side
+// is 1000 + interval * 2000 ms, so this also sets how long a server lingers in
+// a client's list after it goes away.
+constexpr std::uint8_t kDefaultAdvertiseInterval = 3;
 
 constexpr std::uint16_t kDefaultDiscoveryPort = 9999;
 constexpr std::uint16_t kDefaultLobbyPort = 9900;
@@ -56,15 +72,21 @@ std::optional<Game> parseGame(std::string_view text);
 struct Beacon {
     std::string ident;      // e.g. "NFSU2NA" — clients filter the LAN list on this
     std::string name;       // visible server name
-    std::string stats;      // raw stats field, usually "<port>|0"
-    std::string transport;  // transport capabilities string
+    std::string stats;      // raw stats field, "<port>|<players>"
+    std::string transport;  // transport capabilities; empty means "withdrawn"
+    std::uint8_t advertiseInterval = kDefaultAdvertiseInterval;
 
-    // Parsed out of `stats` when it looks like "<port>|<flags>".
+    // Parsed out of `stats` when it looks like "<port>|<players>".
     std::optional<std::uint16_t> advertisedPort() const;
+    std::optional<int> playerCount() const;
+
+    // A goodbye beacon: the server is telling receivers to drop the row now.
+    bool isWithdrawal() const { return transport.empty(); }
 };
 
-// True when `data` is a well-formed beacon *announcement* (magic + 0x03 + an
-// ident starting with "NFS"). Length must be exactly kBeaconLength.
+// True when `data` is a well-formed beacon *announcement*: 'gEA' magic, a
+// non-empty name, and not a query. Deliberately does NOT check byte 3 — that is
+// the advertise interval, and stock receivers accept any value.
 bool isBeacon(const std::uint8_t* data, std::size_t length);
 
 // True when `data` is a discovery *query* — clients broadcast these to ask who
@@ -72,9 +94,17 @@ bool isBeacon(const std::uint8_t* data, std::size_t length);
 bool isDiscoveryQuery(const std::uint8_t* data, std::size_t length);
 
 // Builds the 0x180-byte announcement a client expects to see.
-std::array<std::uint8_t, kBeaconLength> encodeBeacon(const std::string& ident,
-                                                     const std::string& name, std::uint16_t port,
-                                                     const std::string& transport = kDefaultTransportCaps);
+// `players` goes into the second half of the stats field; pass the live count.
+std::array<std::uint8_t, kBeaconLength> encodeBeacon(
+    const std::string& ident, const std::string& name, std::uint16_t port, int players = 0,
+    const std::string& transport = kDefaultTransportCaps,
+    std::uint8_t advertiseInterval = kDefaultAdvertiseInterval);
+
+// Builds the goodbye beacon: identical, but with an empty transport field, which
+// tells receivers to drop the row immediately instead of waiting for expiry.
+std::array<std::uint8_t, kBeaconLength> encodeWithdrawal(const std::string& ident,
+                                                         const std::string& name,
+                                                         std::uint16_t port);
 
 // Builds the query a client broadcasts to discover servers.
 std::array<std::uint8_t, kBeaconLength> encodeDiscoveryQuery();

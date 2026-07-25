@@ -19,6 +19,7 @@
 #include "nfslan/beacon.hpp"
 #include "nfslan/config.hpp"
 #include "nfslan/discovery.hpp"
+#include "nfslan/lobby.hpp"
 #include "nfslan/net.hpp"
 
 namespace {
@@ -49,6 +50,10 @@ void printUsage(const char* program) {
         "  --no-loopback        Do not announce to 127.0.0.1 (breaks same-PC play)\n"
         "  --discover [secs]    Do not serve; listen for other servers and print\n"
         "                       what is on the LAN (default: 5 seconds)\n"
+        "  --no-lobby           Do not listen on the lobby port at all\n"
+        "  --capture <path>     Append the lobby handshake hex dump to a file.\n"
+        "                       Use this to reverse the session protocol: point a\n"
+        "                       real client at the server and read the transcript.\n"
         "  --verbose            Log every packet decision\n"
         "  --help               Show this help\n"
         "\n"
@@ -67,6 +72,8 @@ struct Options {
     bool discoverOnly = false;
     int discoverSeconds = 5;
     bool showHelp = false;
+    bool runLobby = true;
+    std::string capturePath;
 
     // Set when the flag was given, so CLI wins over the config file.
     bool nameFromCli = false;
@@ -163,6 +170,11 @@ bool parseArguments(int argc, char** argv, Options* options, std::string* error)
                     options->discoverSeconds = value;
                 }
             }
+        } else if (arg == "--no-lobby") {
+            options->runLobby = false;
+        } else if (arg == "--capture") {
+            if (!needsValue(i, "--capture")) return false;
+            options->capturePath = argv[++i];
         } else if (arg == "--verbose" || arg == "-v") {
             options->config.verbose = true;
         } else {
@@ -258,7 +270,7 @@ int runDiscovery(const Options& options) {
     return 0;
 }
 
-int runServer(const nfslan::ServerConfig& config) {
+int runServer(const nfslan::ServerConfig& config, const Options& options) {
     // Resolve the address we advertise, purely for the status banner: clients
     // connect back to the source address of our beacon, so this is advisory.
     std::string advertised = config.advertisedAddress;
@@ -301,14 +313,48 @@ int runServer(const nfslan::ServerConfig& config) {
         return 1;
     }
 
+    // The lobby listener is what a client dials after picking us out of the LAN
+    // list. Without it the game hangs on "connecting to lobby" with nothing to
+    // connect to, so run it by default even though it cannot serve a session yet.
+    const auto logLine = [](const std::string& message) {
+        std::printf("  %s\n", message.c_str());
+        std::fflush(stdout);
+    };
+
+    nfslan::LobbySettings lobbySettings;
+    lobbySettings.port = config.lobbyPort;
+    lobbySettings.mode = nfslan::LobbyMode::Capture;
+    lobbySettings.capturePath = options.capturePath;
+    lobbySettings.verbose = config.verbose;
+
+    nfslan::LobbyService lobby(lobbySettings, logLine);
+    bool lobbyRunning = false;
+    if (options.runLobby) {
+        lobbyRunning = lobby.start();
+        if (!lobbyRunning) {
+            std::fprintf(stderr, "warning: could not listen on lobby port %u: %s\n",
+                         config.lobbyPort, lobby.lastError().c_str());
+        }
+    }
+
     std::printf("nfslan-server running\n");
     std::printf("  game        %s\n", std::string(nfslan::toString(config.game)).c_str());
     std::printf("  name        %s\n", config.serverName.c_str());
     std::printf("  ident       %s\n", settings.ident.c_str());
     std::printf("  address     %s\n", advertised.c_str());
-    std::printf("  lobby port  %u (advertised)\n", config.lobbyPort);
     std::printf("  discovery   UDP %u, announcing every %d ms%s\n", config.discoveryPort,
                 config.beaconIntervalMs, config.announceToBroadcast ? "" : " (queries only)");
+    if (lobbyRunning) {
+        std::printf("  lobby       TCP %u, capture mode%s\n", config.lobbyPort,
+                    options.capturePath.empty() ? ""
+                                                : (" -> " + options.capturePath).c_str());
+        std::printf(
+            "\nNote: the lobby protocol is not implemented yet, so a client will reach\n"
+            "'connecting to lobby' and stop there. Everything it sends is logged below,\n"
+            "which is what the protocol work needs.\n");
+    } else {
+        std::printf("  lobby       not listening (clients will hang on connect)\n");
+    }
     std::printf("\nPress Ctrl+C to stop.\n\n");
     std::fflush(stdout);
 
@@ -333,6 +379,9 @@ int runServer(const nfslan::ServerConfig& config) {
 
     std::printf("\nStopping...\n");
     discovery.stop();
+    if (lobbyRunning) {
+        lobby.stop();
+    }
 
     std::printf("  announcements sent   %llu\n",
                 static_cast<unsigned long long>(discovery.stats().announcementsSent.load()));
@@ -340,6 +389,12 @@ int runServer(const nfslan::ServerConfig& config) {
                 static_cast<unsigned long long>(discovery.stats().queriesAnswered.load()));
     std::printf("  other servers seen   %llu\n",
                 static_cast<unsigned long long>(discovery.stats().foreignBeaconsSeen.load()));
+    if (lobbyRunning) {
+        std::printf("  lobby connections    %llu\n",
+                    static_cast<unsigned long long>(lobby.stats().connectionsAccepted.load()));
+        std::printf("  lobby bytes received %llu\n",
+                    static_cast<unsigned long long>(lobby.stats().bytesReceived.load()));
+    }
     return 0;
 }
 
@@ -393,5 +448,5 @@ int main(int argc, char** argv) {
         return runDiscovery(discoverOptions);
     }
 
-    return runServer(config);
+    return runServer(config, options);
 }

@@ -52,8 +52,28 @@ void DiscoveryService::stop() {
     if (thread_.joinable()) {
         thread_.join();
     }
+    // Say goodbye before closing so clients drop us from their list immediately
+    // instead of showing a dead server until the row expires.
+    sendWithdrawal();
     socket_.close();
     running_.store(false);
+}
+
+void DiscoveryService::sendWithdrawal() {
+    if (!socket_.isOpen()) {
+        return;
+    }
+    const auto packet =
+        encodeWithdrawal(settings_.ident, settings_.serverName, settings_.lobbyPort);
+
+    if (settings_.announceToBroadcast) {
+        for (std::uint32_t address : broadcastAddresses()) {
+            socket_.sendTo({address, settings_.discoveryPort}, packet.data(), packet.size());
+        }
+    }
+    if (settings_.announceToLoopback) {
+        socket_.sendTo({kAddrLoopback, settings_.discoveryPort}, packet.data(), packet.size());
+    }
 }
 
 void DiscoveryService::run() {
@@ -75,8 +95,8 @@ void DiscoveryService::run() {
 }
 
 void DiscoveryService::sendAnnouncements() {
-    const auto packet =
-        encodeBeacon(settings_.ident, settings_.serverName, settings_.lobbyPort);
+    const auto packet = encodeBeacon(settings_.ident, settings_.serverName, settings_.lobbyPort,
+                                     playerCount_.load());
 
     const auto send = [&](std::uint32_t address) {
         const Endpoint target{address, settings_.discoveryPort};
@@ -102,8 +122,11 @@ void DiscoveryService::handleDatagram(const Datagram& datagram) {
     const std::size_t length = datagram.data.size();
 
     if (isDiscoveryQuery(data, length)) {
-        const auto packet =
-            encodeBeacon(settings_.ident, settings_.serverName, settings_.lobbyPort);
+        // Stock servers answer a query by pulling their next broadcast forward
+        // rather than replying directly. Unicasting straight back is a superset
+        // of that and is what makes same-machine discovery reliable.
+        const auto packet = encodeBeacon(settings_.ident, settings_.serverName,
+                                         settings_.lobbyPort, playerCount_.load());
         if (socket_.sendTo(datagram.from, packet.data(), packet.size())) {
             stats_.queriesAnswered.fetch_add(1);
             if (log_ && settings_.verbose) {
