@@ -152,6 +152,21 @@ Steam Deck, talking to `nfslan-server` on macOS). The client gets past
 "connecting to lobby" and sits on the LAN Main screen. Entering the lobby proper
 still fails, because the persona/room/game layer is not implemented.
 
+Most Wanted follows the same path and gets **further** than Underground 2: it
+reaches the "Create New Persona" screen and then waits on "Creating persona…".
+Its parameter block differs only in the expected places — `PROD=nfs-pc-2006`,
+`VERS="pc/1.3-Nov 21 2005"`, `SLUS=SLUS_21351`, `NETV=20` (U2 sends 40) — and it
+skips the `sele` step that U2 sends. Creating a persona folds the name into the
+`auth` request rather than a separate verb:
+
+```
+client -> auth  REGN=NA CLST=194010 NETV=20 ... SDKVERS=3.9.3.0
+                NAME=<persona> REGKEY= MAC=$<mac> PASS=<persona> MASK=0
+```
+
+This matches the note in the fork's own README that Most Wanted is the less
+strict of the two.
+
 ### The exchange, as observed on the wire
 
 ```

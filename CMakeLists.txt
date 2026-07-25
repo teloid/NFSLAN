@@ -24,7 +24,10 @@ include(CTest)
 
 option(NFSLAN_BUILD_SERVER "Build the portable standalone LAN server" ON)
 option(NFSLAN_BUILD_TESTS "Build the protocol tests" ON)
-option(NFSLAN_BUILD_GUI "Build the Qt GUI launcher" OFF)
+# Legacy launcher GUIs. Neither is recommended: the worker and patchers are
+# command-line programs, and the Qt GUI only shells out to wine off Windows,
+# which the portable server makes pointless. Kept building so they do not rot.
+option(NFSLAN_BUILD_GUI "Build the legacy Qt GUI launcher (not recommended)" OFF)
 
 # Windows-only components. Defaulted off elsewhere so a non-Windows configure
 # never has to warn about disabling something the user did not ask for.
@@ -36,7 +39,7 @@ endif()
 
 option(NFSLAN_BUILD_WORKER "Build the Windows worker that hosts server.dll (Windows x86 only)"
        ${NFSLAN_WINDOWS_DEFAULT})
-option(NFSLAN_BUILD_NATIVE_WIN32_GUI "Build the native Win32 GUI launcher (Windows only)"
+option(NFSLAN_BUILD_NATIVE_WIN32_GUI "Build the legacy native Win32 GUI launcher (Windows only)"
        ${NFSLAN_WINDOWS_DEFAULT})
 option(NFSLAN_EMBED_WORKER_IN_GUI "Embed the worker into the GUI executable (single EXE mode)" ON)
 
@@ -115,7 +118,7 @@ message(STATUS "NFSLAN configuration (${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCES
 message(STATUS "  nfslan-core           always")
 message(STATUS "  nfslan-server         ${NFSLAN_BUILD_SERVER}")
 message(STATUS "  nfslan-tests          ${NFSLAN_BUILD_TESTS}")
-message(STATUS "  Qt GUI                ${NFSLAN_BUILD_GUI}")
+message(STATUS "  Qt GUI (legacy)       ${NFSLAN_BUILD_GUI}")
 message(STATUS "  Windows worker        ${NFSLAN_BUILD_WORKER}")
-message(STATUS "  native Win32 GUI      ${NFSLAN_BUILD_NATIVE_WIN32_GUI}")
+message(STATUS "  Win32 GUI (legacy)    ${NFSLAN_BUILD_NATIVE_WIN32_GUI}")
 message(STATUS "")
