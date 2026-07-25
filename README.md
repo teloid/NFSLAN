@@ -207,8 +207,9 @@ Careful with the worker: stock `server.dll` derives the ident from its **start-m
 --discover [secs]      List servers on the LAN instead of serving
 --no-lobby             Don't listen on the lobby port at all
 --capture <path>       Log the lobby handshake as a hex dump
---ack-unknown          Acknowledge lobby verbs with no handler, so a client keeps
-                       walking its state machine and reveals its next request
+--ack-unknown          Claim success for lobby verbs with no handler, so a client
+                       keeps walking its state machine and reveals its next
+                       request. Discovery tool only — it can hang the game
 --verbose              Log every packet decision
 ```
 

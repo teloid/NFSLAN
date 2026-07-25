@@ -344,6 +344,34 @@ void testTitanPartialAndRejection() {
     check(!nfslan::looksLikeTitan(absurd.data(), absurd.size()), "an absurd length is not Titan");
 }
 
+void testTitanErrorCodes() {
+    std::printf("titan: error replies\n");
+
+    // Error codes are themselves 4CCs, and the client shows the body as the
+    // message. Replying success to something we cannot fulfil is what hangs the
+    // game, so these have to encode correctly.
+    checkEqualStr(nfslan::titanTagToString(nfslan::kErrorNotFound), "nfnd", "'nfnd' renders");
+    checkEqualStr(nfslan::titanTagToString(nfslan::kErrorMustAuth), "maut", "'maut' renders");
+    check(nfslan::kErrorNotFound != nfslan::kCodeSuccess, "an error code is not success");
+
+    nfslan::TitanMessage reply;
+    reply.tag = nfslan::kTagAuth;
+    reply.code = nfslan::kErrorNotFound;
+    reply.body = "not implemented";
+
+    const auto encoded = nfslan::encodeTitan(reply);
+    const auto decoded = nfslan::decodeTitan(encoded);
+    check(decoded.has_value(), "error reply decodes");
+    if (decoded) {
+        checkEqualInt(decoded->tag, nfslan::kTagAuth, "error keeps the request tag");
+        checkEqualInt(decoded->code, nfslan::kErrorNotFound, "error code survives");
+        checkEqualStr(decoded->body, "not implemented", "error message survives");
+        // describe() renders a non-zero code as its 4CC, not as a number.
+        check(decoded->describe().find("nfnd") != std::string::npos,
+              "describe() shows the error code as text");
+    }
+}
+
 void testTagFields() {
     std::printf("titan: TagField bodies\n");
 
@@ -400,6 +428,7 @@ int main() {
     testAddressHelpers();
     testTitanFraming();
     testTitanPartialAndRejection();
+    testTitanErrorCodes();
     testTagFields();
 
     std::printf("\n%d checks, %d failures\n", gChecks, gFailures);

@@ -224,9 +224,23 @@ fields above, then handling persona selection, room listing, and game creation
 useful entry point, including its error vocabulary (`maut`, `ingm`, `urom`,
 `filt`, `dupl`, `nown`).
 
-`nfslan-server --ack-unknown` is the tool for this: it acknowledges any tag it
-has no handler for, so the client keeps walking its state machine and reveals
-the next request instead of stalling. Pair it with `--capture` for hex dumps.
+### Never fake a success
+
+Replying `code 0` to a request the server cannot actually fulfil **hangs the
+game**: the client believes the operation is underway and blocks waiting for a
+result that never arrives, and backing out of the menu with that request
+outstanding deadlocks the UI. Observed with Most Wanted, which froze on the way
+back to the main menu after being told persona creation had succeeded.
+
+So the default for an unmapped verb is a clean failure: reply with the request's
+own tag and a non-zero 4CC error code (`nfnd`), and put a human-readable message
+in the body — the client displays it and backs out. Stock error codes include
+`nfnd`, `miss`, `uusr`, `maut`, `ingm`, `urom`, `filt`, `dupl` and `nown`.
+
+`nfslan-server --ack-unknown` opts back into the fake-success behaviour, because
+it is the only way to make the client reveal what it would ask next. It is a
+discovery tool only, and it can hang the game — which is why it is not the
+default.
 
 ## Titan framing reference
 

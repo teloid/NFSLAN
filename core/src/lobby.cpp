@@ -253,23 +253,28 @@ bool LobbyService::respondTo(TcpConnection& connection, const TitanMessage& requ
             break;
 
         default:
-            if (!settings_.ackUnknownTags) {
-                stats_.unhandledTags.fetch_add(1);
-                if (log_) {
-                    log_("lobby: no handler for " + titanTagToString(request.tag) +
-                         "; session handshake stops here (see docs/PROTOCOL.md)");
-                }
-                return true;
-            }
-            // Exploration mode: acknowledge anything so the client keeps walking
-            // its state machine and reveals the next request. A bare success is
-            // wrong for verbs whose replies carry required fields, so this is a
-            // discovery tool, not correct behaviour.
             stats_.unhandledTags.fetch_add(1);
-            reply.body.clear();
+            if (settings_.ackUnknownTags) {
+                // Exploration mode: claim success so the client keeps walking its
+                // state machine and reveals the next request. This is a discovery
+                // tool, not correct behaviour — a success we cannot back up leaves
+                // the client waiting on a result that never comes, which is what
+                // hangs the game's menus.
+                reply.body.clear();
+                if (log_) {
+                    log_("lobby: acking unmapped " + titanTagToString(request.tag) +
+                         " (exploration mode; may hang the client)");
+                }
+                break;
+            }
+            // Default: fail cleanly. Any non-zero code is an error, and the client
+            // shows the body as the message, so it reports a problem and backs out
+            // instead of blocking on a request we cannot complete.
+            reply.code = kErrorNotFound;
+            reply.body = "not implemented by nfslan-server yet";
             if (log_) {
-                log_("lobby: acking unmapped " + titanTagToString(request.tag) +
-                     " to see what the client asks next");
+                log_("lobby: no handler for " + titanTagToString(request.tag) +
+                     "; replying 'nfnd' so the client fails cleanly");
             }
             break;
     }

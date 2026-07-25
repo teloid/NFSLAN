@@ -51,8 +51,21 @@ constexpr std::uint32_t kTagAddress = titanTag("addr");    // client reports its
 constexpr std::uint32_t kTagSessionKey = titanTag("skey");
 constexpr std::uint32_t kTagAuth = titanTag("auth");
 
-// Reply code meaning success. Anything else is a 4-char ASCII error code.
+// Reply code meaning success. Anything else is a 4-char ASCII error code, and
+// the client shows the reply body as the error message.
 constexpr std::uint32_t kCodeSuccess = 0;
+
+// Error codes the stock servers use. Replying with one of these makes a client
+// fail cleanly; replying success to a request we cannot actually fulfil leaves
+// it waiting forever, which hangs the game's menus.
+constexpr std::uint32_t kErrorNotFound = titanTag("nfnd");
+constexpr std::uint32_t kErrorMissingField = titanTag("miss");
+constexpr std::uint32_t kErrorUnknownUser = titanTag("uusr");
+constexpr std::uint32_t kErrorMustAuth = titanTag("maut");
+constexpr std::uint32_t kErrorAlreadyInGame = titanTag("ingm");
+constexpr std::uint32_t kErrorUnknownRoom = titanTag("urom");
+constexpr std::uint32_t kErrorDuplicate = titanTag("dupl");
+constexpr std::uint32_t kErrorNotOwner = titanTag("nown");
 
 // Renders a tag back to its four characters, for logs.
 std::string titanTagToString(std::uint32_t tag);
