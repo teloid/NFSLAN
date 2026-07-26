@@ -24,19 +24,21 @@ The worker hosts the game's real `server.dll` and runs full sessions, and comes 
 
 ## Downloads
 
-Grab a [release](../../releases) — every download is one self-contained file, no installer:
+Grab a [release](../../releases) — each download is one self-contained file, no installer:
 
 | File | For |
 | --- | --- |
 | `nfslan-server-macos-universal` | macOS 11+, Apple Silicon and Intel |
 | `nfslan-server-linux-x86_64` | Linux x86_64 (glibc 2.17+, so anything modern) |
-| `nfslan-server-windows-x64.exe` | Windows, making servers visible |
-| `NFSLAN-GUI.exe` | Windows, hosting an actual race |
 
 On macOS and Linux, mark it executable first: `chmod +x nfslan-server-*`.
 
 macOS will refuse to run an unsigned download until you allow it once:
 `xattr -d com.apple.quarantine nfslan-server-macos-universal`.
+
+**Windows binaries are not published yet** — building them is two commands:
+[Quick start](#quick-start) for `nfslan-server.exe`, and
+[docs/WINDOWS.md](docs/WINDOWS.md) for `NFSLAN-GUI.exe`.
 
 ---
 
