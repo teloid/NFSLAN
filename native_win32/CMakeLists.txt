@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.21)
 
+# These sources use the Unicode entry points wWinMain (GUI) and wmain (patchers).
+# MSVC picks those up from /D UNICODE, but MinGW needs -municode explicitly or it
+# links the ANSI startup code and fails with "undefined reference to WinMain".
+function(nfslan_win32_unicode_entry target)
+    if(MINGW)
+        target_link_options(${target} PRIVATE -municode)
+    endif()
+endfunction()
+
 if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
     set(NFSLAN_NATIVE_WIN32_CAN_EMBED OFF)
     if(NFSLAN_BUILD_WORKER AND NFSLAN_EMBED_WORKER_IN_GUI AND CMAKE_SIZEOF_VOID_P EQUAL 4)
@@ -49,6 +58,8 @@ if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
     set_target_properties(nfslan-native-gui PROPERTIES
         OUTPUT_NAME "NFSLAN-GUI"
     )
+
+    nfslan_win32_unicode_entry(nfslan-native-gui)
 endif()
 
 if(WIN32)
@@ -69,6 +80,8 @@ if(WIN32)
         OUTPUT_NAME "NFSLAN-U2-Patcher"
     )
 
+    nfslan_win32_unicode_entry(nfslan-u2-patcher)
+
     add_executable(nfslan-mw-patcher
         src/MWPatchLauncher.cpp
     )
@@ -85,4 +98,6 @@ if(WIN32)
     set_target_properties(nfslan-mw-patcher PROPERTIES
         OUTPUT_NAME "NFSLAN-MW-Patcher"
     )
+
+    nfslan_win32_unicode_entry(nfslan-mw-patcher)
 endif()

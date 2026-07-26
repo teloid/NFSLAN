@@ -30,6 +30,7 @@ Grab a [release](../../releases) — each download is one self-contained file, n
 | --- | --- |
 | `nfslan-server-macos-universal` | macOS 11+, Apple Silicon and Intel |
 | `nfslan-server-linux-x86_64` | Linux x86_64 (glibc 2.17+, so anything modern) |
+| `nfslan-server-windows-x64.exe` | Windows x64 — no runtime to install |
 
 On macOS and Linux, mark it executable first: `chmod +x nfslan-server-*`.
 
@@ -53,9 +54,9 @@ Security**, where it appears as "was blocked".
 
 If `xattr` reports "No such xattr", the file was never quarantined — just run it.
 
-**Windows binaries are not published yet** — building them is two commands:
-[Quick start](#quick-start) for `nfslan-server.exe`, and
-[docs/WINDOWS.md](docs/WINDOWS.md) for `NFSLAN-GUI.exe`.
+`NFSLAN-GUI.exe` (for hosting an actual race) is **not** published yet — it has to
+be built with MSVC on Windows, because the worker it embeds uses MSVC-only inline
+assembly. See [docs/WINDOWS.md](docs/WINDOWS.md); it is two commands.
 
 ---
 

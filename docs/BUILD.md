@@ -145,6 +145,39 @@ A *fully* static build links, but do not ship one: glibc's `getaddrinfo` needs
 matching shared NSS libraries at runtime, and a statically-linked resolver
 segfaults on a host with a different glibc. `nfslan::resolveHost()` uses it.
 
+**Windows x86_64**, cross-compiled from macOS or Linux with MinGW-w64 — no Windows
+machine needed (`brew install mingw-w64`, or your distro's package):
+
+```bash
+cmake -S . -B build-win64 -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-win64 -j
+x86_64-w64-mingw32-strip --strip-unneeded build-win64/bin/nfslan-server.exe
+```
+
+The toolchain file static-links the GCC and C++ runtimes, so the `.exe` needs no
+MinGW DLLs beside it. Stripping matters: unstripped these come out around 16 MB
+and drop to about 1.3 MB.
+
+### What cross-compiling can and cannot produce
+
+| Target | MinGW | Note |
+| --- | --- | --- |
+| `nfslan-server.exe` | ✅ | Fully functional. Verified under Wine: all protocol checks pass, and it was discovered across the network by the macOS build. |
+| `NFSLAN-U2/MW-Patcher.exe` | ✅ | Link cleanly. Only useful alongside a worker, so they are not published from a cross-build. |
+| `NFSLAN-GUI.exe` | ⚠️ | Links, but an x86_64 build cannot embed the 32-bit worker, so it has nothing to host. Build it with MSVC. |
+| `NFSLAN.exe` (worker) | ❌ | **Impossible.** Needs MSVC. |
+
+The worker's blockers, if anyone wants to try:
+
+- `injector/assembly.hpp:30` — `#error Cannot use this header in another compiler other than MSVC`
+- `injector/assembly.hpp:100` — MSVC `_asm` inline assembly
+- `injector/hooking/Hooking.Patterns.h:201` — missing `template` disambiguator, which
+  GCC rejects (a genuine portability bug, but fixing it alone unlocks nothing)
+
+Unicode entry points need `-municode` under MinGW, or the link fails with
+`undefined reference to WinMain`; `native_win32/CMakeLists.txt` handles that.
+
 ## Troubleshooting
 
 - **"Address already in use" on startup.** Something already holds UDP 9999 —
