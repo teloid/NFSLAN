@@ -6,7 +6,7 @@ Some retail and repack builds can't spawn a server at all, and others spawn one 
 
 And because the ports for this game are documented essentially nowhere: **[they're all right here](#ports--firewall).**
 
-Everything is a plain CMake build — one command, no IDE, no GUI required.
+Everything is a plain CMake build — one command, no IDE, no dependencies.
 
 ---
 
@@ -16,11 +16,27 @@ Everything is a plain CMake build — one command, no IDE, no GUI required.
 | --- | --- | --- |
 | Make a server appear in a client that can't see servers | **`nfslan-server`** | macOS, Linux, Windows — any CPU |
 | Find out what's on the LAN / which ident a client wants | **`nfslan-server --discover`** | macOS, Linux, Windows |
-| Actually host a race, with same-PC join | **`NFSLAN.exe`** (the worker) | Windows, x86 build |
+| Actually host a race, with same-PC join | **`NFSLAN-GUI.exe`** (or the `NFSLAN.exe` worker) | Windows, x86 build |
 
 `nfslan-server` speaks the LAN protocol itself — no `server.dll`, no Wine, no x86 — and is the tool for diagnosing and fixing visibility problems. It can carry a real client through the connect handshake, but **cannot run a race yet**; see [Status](#status).
 
-The worker hosts the game's real `server.dll` and runs full sessions. It is a command-line program; you do not need a GUI to use it.
+The worker hosts the game's real `server.dll` and runs full sessions, and comes with a Windows GUI that wraps it in a single executable.
+
+## Downloads
+
+Grab a [release](../../releases) — every download is one self-contained file, no installer:
+
+| File | For |
+| --- | --- |
+| `nfslan-server-macos-universal` | macOS 11+, Apple Silicon and Intel |
+| `nfslan-server-linux-x86_64` | Linux x86_64 (glibc 2.17+, so anything modern) |
+| `nfslan-server-windows-x64.exe` | Windows, making servers visible |
+| `NFSLAN-GUI.exe` | Windows, hosting an actual race |
+
+On macOS and Linux, mark it executable first: `chmod +x nfslan-server-*`.
+
+macOS will refuse to run an unsigned download until you allow it once:
+`xattr -d com.apple.quarantine nfslan-server-macos-universal`.
 
 ---
 
@@ -63,35 +79,22 @@ Run this on the machine that *can't* see servers — it answers "is anything adv
 
 ### Windows — host a real race
 
-Build the worker (x86, because `server.dll` is 32-bit):
+Download `NFSLAN-GUI.exe`, or build it:
 
 ```powershell
-cmake -S . -B build-win32 -G "Visual Studio 17 2022" -A Win32 -DNFSLAN_BUILD_WORKER=ON -DNFSLAN_EMBED_WORKER_IN_GUI=OFF
+cmake -S . -B build-win32 -G "Visual Studio 17 2022" -A Win32
 cmake --build build-win32 --config Release
 ```
 
-Run it from the folder that holds the game EXE, `server.dll` and `server.cfg`:
+`-A Win32` is required — the worker hosts a 32-bit `server.dll`.
 
-```powershell
-.\NFSLAN.exe "Living Room"
-```
+Run `NFSLAN-GUI.exe` **as Administrator**, pick the game, point it at the folder
+holding the game EXE + `server.dll` + `server.cfg`, name your server, and press
+**Start Bundle**. The game launches patched so you can join from the same PC.
 
-Useful flags:
-
-| Flag | What it does |
-| --- | --- |
-| `--same-machine` | Host and play on one PC (sets `FORCE_LOCAL` and address fixups) |
-| `--u2-mode N` | Underground 2 `StartServer` mode, 0–13. `0` advertises as `NFSU2NA`, non-zero as `NFSU2` |
-| `--beacon-only` | Advertise without loading `server.dll` at all |
-| `--diag-lan` | Verbose LAN discovery diagnostics |
-
-For same-PC play you also need the patcher, which clears the client's "hide my own server" filter:
-
-```powershell
-.\NFSLAN-U2-Patcher.exe      # or NFSLAN-MW-Patcher.exe
-```
-
-Run as Administrator.
+It's a single self-contained executable — the worker is embedded, no runtime to
+install. There's a command-line path too (`NFSLAN.exe "Server Name"`), plus the
+patcher details and every flag, in **[docs/WINDOWS.md](docs/WINDOWS.md)**.
 
 ---
 
@@ -207,6 +210,7 @@ Careful with the worker: stock `server.dll` derives the ident from its **start-m
 --discover [secs]      List servers on the LAN instead of serving
 --no-lobby             Don't listen on the lobby port at all
 --capture <path>       Log the lobby handshake as a hex dump
+--capture-only         Log the handshake without answering it at all
 --ack-unknown          Claim success for lobby verbs with no handler, so a client
                        keeps walking its state machine and reveals its next
                        request. Discovery tool only — it can hang the game
@@ -226,7 +230,7 @@ A stock `server.cfg` works unchanged — unknown keys are ignored, and `PORT`, `
 - The lobby connect handshake (EA "Titan" framing), verified against **both** retail games running under Proton on a Steam Deck against `nfslan-server` on macOS:
   - **Underground 2** (1.2, `SKU=14705`) — appears in the LAN list, connects, and reaches the LAN Main screen.
   - **Most Wanted** (1.3, `SKU=14705`) — appears in the LAN list, connects, and gets as far as **creating an online persona**.
-- Native builds on macOS (Apple Silicon and Intel), Linux and Windows, with no `server.dll` and no x86 requirement. 108 protocol tests.
+- Native builds on macOS (Apple Silicon and Intel), Linux and Windows, with no `server.dll` and no x86 requirement. 116 protocol checks, all passing.
 - The Windows worker for real matches.
 
 **Not done yet**
@@ -237,21 +241,10 @@ A stock `server.cfg` works unchanged — unknown keys are ignored, and `PORT`, `
 
 ## Documentation
 
-- [docs/BUILD.md](docs/BUILD.md) — build matrix for every platform
+- [docs/WINDOWS.md](docs/WINDOWS.md) — hosting a real race on Windows: the GUI, the worker, the patchers
+- [docs/BUILD.md](docs/BUILD.md) — build matrix for every platform, and how the releases are made
 - [docs/PROTOCOL.md](docs/PROTOCOL.md) — the wire format, field by field, verified vs guesswork
-- [docs/RUNNING.md](docs/RUNNING.md) — runtime usage
-- [docs/CLIENT_SETUP.md](docs/CLIENT_SETUP.md) — client and network setup
-- [docs/U2_PATCHER.md](docs/U2_PATCHER.md) — same-PC join patcher behaviour
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the pieces fit together
-
-## A note on the GUIs
-
-Two launcher GUIs exist in the tree and **neither is recommended**:
-
-- `gui/` (Qt) is outdated. It is only a launcher for the *Windows* worker, and on other platforms it shells out to `wine`, which is pointless now that `nfslan-server` runs natively. Off by default; `-DNFSLAN_BUILD_GUI=ON` if you really want it.
-- `native_win32/` (Win32) still builds the working Windows GUI, but the worker and patcher it wraps are plain command-line programs. Use them directly — it is fewer moving parts and easier to script and debug.
-
-The supported path is the CMake build plus the command-line tools.
 
 ## Legal
 

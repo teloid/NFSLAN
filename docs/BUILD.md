@@ -32,9 +32,8 @@ NFSLAN configuration (Darwin/arm64, Release):
   nfslan-core           always
   nfslan-server         ON
   nfslan-tests          ON
-  Qt GUI                OFF
   Windows worker        OFF
-  native Win32 GUI      OFF
+  Win32 GUI             OFF
 ```
 
 ### macOS notes
@@ -70,9 +69,8 @@ Output: `build\bin\Release\nfslan-server.exe`.
 | --- | --- | --- |
 | `NFSLAN_BUILD_SERVER` | `ON` | The portable standalone server |
 | `NFSLAN_BUILD_TESTS` | `ON` | Protocol codec tests |
-| `NFSLAN_BUILD_GUI` | `OFF` | Qt Widgets launcher (needs Qt 5 or 6) |
 | `NFSLAN_BUILD_WORKER` | `ON` on Windows, else `OFF` | Worker that hosts `server.dll` |
-| `NFSLAN_BUILD_NATIVE_WIN32_GUI` | `ON` on Windows, else `OFF` | Native Win32 GUI |
+| `NFSLAN_BUILD_NATIVE_WIN32_GUI` | `ON` on Windows, else `OFF` | Win32 GUI launcher. The two game patchers build on Windows regardless of this. |
 | `NFSLAN_EMBED_WORKER_IN_GUI` | `ON` | Single-EXE mode (Win32/x86 only) |
 
 The Windows-only options turn themselves off on other platforms and say so once
@@ -86,7 +84,6 @@ Studio 2022 and an x86 target.
 ```powershell
 cmake -S . -B build-win32-single -G "Visual Studio 17 2022" -A Win32 `
   -DNFSLAN_BUILD_NATIVE_WIN32_GUI=ON `
-  -DNFSLAN_BUILD_GUI=OFF `
   -DNFSLAN_BUILD_WORKER=ON `
   -DNFSLAN_EMBED_WORKER_IN_GUI=ON
 cmake --build build-win32-single --config Release
@@ -106,7 +103,6 @@ stays x86:
 ```powershell
 cmake -S . -B build-x64-native -G "Visual Studio 17 2022" -A x64 `
   -DNFSLAN_BUILD_NATIVE_WIN32_GUI=ON `
-  -DNFSLAN_BUILD_GUI=OFF `
   -DNFSLAN_BUILD_WORKER=ON `
   -DNFSLAN_EMBED_WORKER_IN_GUI=OFF
 cmake --build build-x64-native --config Release
@@ -121,17 +117,33 @@ Expected:
 An x64 configure will *not* produce the worker — it prints a status line saying
 so, because `server.dll` is 32-bit. Configure with `-A Win32` for `NFSLAN.exe`.
 
-## Qt GUI (optional, cross-platform)
+## Release binaries
+
+How the published artifacts are produced, if you want to reproduce them:
+
+**macOS universal** (arm64 + x86_64, runs back to macOS 11):
 
 ```bash
-cmake -S . -B build-gui -DNFSLAN_BUILD_GUI=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build-gui -j
+cmake -S . -B build-universal -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+cmake --build build-universal -j
+lipo -archs build-universal/bin/nfslan-server   # expect: x86_64 arm64
 ```
 
-Needs Qt 6 (or Qt 5) Widgets. On macOS: `brew install qt`. Note the GUI is a
-launcher for the *Windows* worker — on non-Windows hosts it shells out to `wine`,
-so it is only useful there with Wine plus a Windows worker binary. For a native
-macOS or Linux server, run `nfslan-server` directly.
+**Linux x86_64** (portable back to glibc 2.17). Built in a Debian 11 container so
+the glibc baseline is old, with the C++ runtime linked statically so users do not
+need a matching `libstdc++`:
+
+```bash
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+cmake --build build-release -j
+strip --strip-unneeded build-release/bin/nfslan-server
+```
+
+A *fully* static build links, but do not ship one: glibc's `getaddrinfo` needs
+matching shared NSS libraries at runtime, and a statically-linked resolver
+segfaults on a host with a different glibc. `nfslan::resolveHost()` uses it.
 
 ## Troubleshooting
 
@@ -146,3 +158,5 @@ macOS or Linux server, run `nfslan-server` directly.
   `NFSLAN-GUI.exe` and rebuild.
 - **CMake generator cache conflicts**: configure into a fresh build directory.
 - **Bundle mode does nothing** (Windows): run the GUI as Administrator.
+
+For the Windows racing path in detail, see [WINDOWS.md](WINDOWS.md).

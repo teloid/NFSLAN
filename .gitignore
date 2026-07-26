@@ -377,7 +377,9 @@ NFSU2_RU/
 .DS_Store
 ._*
 NFSLAN-native.ini
-relay-beacon-diff.txt
 *.pcap
 *.pcapng
 *.cap
+
+# Release artifacts
+dist/

@@ -6,7 +6,7 @@ The project is two independent halves over one protocol.
                         ┌─────────────────────────────────────┐
                         │  nfslan-core  (portable library)    │
                         │  net · beacon · config · discovery  │
-                        │  lobby (capture)                    │
+                        │  lobby (handshake)                  │
                         └───────────────┬─────────────────────┘
                                         │
                  ┌──────────────────────┴──────────────┐
@@ -41,7 +41,7 @@ The project is two independent halves over one protocol.
 | `beacon` | Encode/decode the 0x180-byte LAN beacon; ident rewriting; withdrawal beacons. |
 | `config` | `server.cfg` reader. Accepts stock files unchanged; warns on the mismatches that hide servers. |
 | `discovery` | The service loop: answers `?` queries, announces on an interval, says goodbye on shutdown. |
-| `lobby` | TCP listener for the advertised port. Currently capture-only — logs the client handshake for reverse engineering. |
+| `lobby` | TCP listener for the advertised port. Answers the EA "Titan" connect handshake, and fails cleanly on anything past it. |
 
 **`cli/`** — `nfslan-server`. Argument parsing, config merge, status output, and
 a `--discover` mode that lists what is on the LAN.
@@ -78,9 +78,12 @@ Discovery is the same on both paths:
 4. The client connects back to the **source address** of the beacon, on the port
    from the beacon's stats field.
 
-At step 4 the two halves diverge: the worker hands the connection to the real
-`server.dll`, which runs the session. `nfslan-server` accepts and logs it, because
-the lobby protocol is not implemented yet.
+At step 4 the two halves diverge. The worker hands the connection to the real
+`server.dll`, which runs the session. `nfslan-server` answers the connect
+handshake itself — declining encryption, then redirecting the client to its own
+address — which carries a real client past "connecting to lobby". Requests beyond
+that point get a clean error reply rather than a fabricated success, because
+claiming an unimplemented operation succeeded hangs the game.
 
 See [PROTOCOL.md](PROTOCOL.md) for the wire format and what remains unknown.
 

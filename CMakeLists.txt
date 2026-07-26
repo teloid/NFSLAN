@@ -17,17 +17,13 @@ include(CTest)
 #
 #   PORTABLE  - nfslan-core, nfslan-server, nfslan-tests. Plain sockets, no
 #               server.dll, no x86 assumptions. Build anywhere.
-#   WINDOWS   - the worker that hosts the game's 32-bit server.dll, the native
-#               Win32 GUI, and the in-memory game patchers. These need Win32
-#               APIs and x86 code patching, so they only exist on Windows.
+#   WINDOWS   - the worker that hosts the game's 32-bit server.dll, the Win32
+#               GUI that wraps it, and the in-memory game patchers. These need
+#               Win32 APIs and x86 code patching, so they only exist on Windows.
 # ---------------------------------------------------------------------------
 
 option(NFSLAN_BUILD_SERVER "Build the portable standalone LAN server" ON)
 option(NFSLAN_BUILD_TESTS "Build the protocol tests" ON)
-# Legacy launcher GUIs. Neither is recommended: the worker and patchers are
-# command-line programs, and the Qt GUI only shells out to wine off Windows,
-# which the portable server makes pointless. Kept building so they do not rot.
-option(NFSLAN_BUILD_GUI "Build the legacy Qt GUI launcher (not recommended)" OFF)
 
 # Windows-only components. Defaulted off elsewhere so a non-Windows configure
 # never has to warn about disabling something the user did not ask for.
@@ -39,7 +35,7 @@ endif()
 
 option(NFSLAN_BUILD_WORKER "Build the Windows worker that hosts server.dll (Windows x86 only)"
        ${NFSLAN_WINDOWS_DEFAULT})
-option(NFSLAN_BUILD_NATIVE_WIN32_GUI "Build the legacy native Win32 GUI launcher (Windows only)"
+option(NFSLAN_BUILD_NATIVE_WIN32_GUI "Build the Win32 GUI launcher (Windows only)"
        ${NFSLAN_WINDOWS_DEFAULT})
 option(NFSLAN_EMBED_WORKER_IN_GUI "Embed the worker into the GUI executable (single EXE mode)" ON)
 
@@ -73,13 +69,13 @@ if(NFSLAN_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-if(NFSLAN_BUILD_GUI)
-    add_subdirectory(gui)
-endif()
-
 # --- Windows-only targets ---------------------------------------------------
 
-if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
+# Always descend on Windows: this directory holds the GUI *and* the two game
+# patchers, and the patchers are needed for same-PC play even when the GUI is
+# turned off. Gating the whole directory on the GUI option used to make them
+# silently disappear.
+if(WIN32)
     add_subdirectory(native_win32)
 endif()
 
@@ -118,7 +114,9 @@ message(STATUS "NFSLAN configuration (${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCES
 message(STATUS "  nfslan-core           always")
 message(STATUS "  nfslan-server         ${NFSLAN_BUILD_SERVER}")
 message(STATUS "  nfslan-tests          ${NFSLAN_BUILD_TESTS}")
-message(STATUS "  Qt GUI (legacy)       ${NFSLAN_BUILD_GUI}")
 message(STATUS "  Windows worker        ${NFSLAN_BUILD_WORKER}")
-message(STATUS "  Win32 GUI (legacy)    ${NFSLAN_BUILD_NATIVE_WIN32_GUI}")
+message(STATUS "  Win32 GUI             ${NFSLAN_BUILD_NATIVE_WIN32_GUI}")
+if(WIN32)
+    message(STATUS "  game patchers         ON (needed for same-PC play)")
+endif()
 message(STATUS "")

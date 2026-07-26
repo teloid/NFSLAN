@@ -46,14 +46,8 @@ if(NFSLAN_BUILD_NATIVE_WIN32_GUI)
         message(STATUS "native_win32 GUI: external worker mode (no embedded worker)")
     endif()
 
-    if(NFSLAN_BUILD_GUI)
-        set(NFSLAN_NATIVE_OUTPUT_NAME "NFSLAN-NativeGUI")
-    else()
-        set(NFSLAN_NATIVE_OUTPUT_NAME "NFSLAN-GUI")
-    endif()
-
     set_target_properties(nfslan-native-gui PROPERTIES
-        OUTPUT_NAME "${NFSLAN_NATIVE_OUTPUT_NAME}"
+        OUTPUT_NAME "NFSLAN-GUI"
     )
 endif()
 

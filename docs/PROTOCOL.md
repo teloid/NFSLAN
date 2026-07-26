@@ -4,9 +4,15 @@ What the games put on the wire. Field layouts here were read out of the stock
 `server.dll` and game EXE decompiles, then verified byte-for-byte against a
 running `nfslan-server`. Where something is still a guess, it says so.
 
-This covers **discovery** — everything needed for a server to appear in the LAN
-list and advertise where to connect. The lobby/session protocol is only partly
-mapped; see [Open questions](#open-questions).
+This covers **discovery** in full — everything needed for a server to appear in
+the LAN list and advertise where to connect — plus the lobby **connect
+handshake**, which is implemented and verified against both retail games. The
+persona/room/game layer after that is not implemented; see
+[Open questions](#open-questions).
+
+Citations point into Ghidra decompiles of the games' own `server.dll` and
+executables. Those are deliberately **not** in this repository (it ships no game
+code); the line numbers are provenance for anyone working from their own copy.
 
 ## Ports
 
@@ -260,17 +266,15 @@ Known behaviour: a `@dir` response whose body contains `DOWN=` or `IDOWN=` makes
 a Most Wanted client treat a reachable server as down. The Windows worker rewrites
 such bodies in place to `ADDR=<addr>\nPORT=<port>\n`, preserving the total length.
 
-What is **not** mapped is the sequence — which message a client sends first on
-connect, and what it must receive to consider itself joined. Until that is known,
-`nfslan-server` accepts the connection and logs the bytes rather than guessing a
-reply:
+The connect sequence **is** mapped and implemented — see "The exchange, as
+observed on the wire" above. What remains is the persona/account layer that
+follows it.
+
+To capture a client's traffic for that work:
 
 ```bash
 nfslan-server --capture lobby.txt
 ```
-
-Point a real client at it, then read `lobby.txt`. That transcript is what
-finishing this needs.
 
 ## Open questions
 
