@@ -33,8 +33,25 @@ Grab a [release](../../releases) — each download is one self-contained file, n
 
 On macOS and Linux, mark it executable first: `chmod +x nfslan-server-*`.
 
-macOS will refuse to run an unsigned download until you allow it once:
-`xattr -d com.apple.quarantine nfslan-server-macos-universal`.
+### macOS: "cannot be opened because it is from an unidentified developer"
+
+Expected. The binary is not signed with an Apple Developer ID or notarized —
+that needs a paid Apple account, which this project does not have. The file is
+fine; macOS just cannot vouch for it.
+
+One command clears it:
+
+```bash
+chmod +x nfslan-server-macos-universal
+xattr -d com.apple.quarantine nfslan-server-macos-universal
+```
+
+Or without the terminal: **right-click the file → Open → Open**. Note that
+*double-clicking* will always be refused — only the right-click route offers the
+override. You can also allow it after the fact in **System Settings → Privacy &
+Security**, where it appears as "was blocked".
+
+If `xattr` reports "No such xattr", the file was never quarantined — just run it.
 
 **Windows binaries are not published yet** — building them is two commands:
 [Quick start](#quick-start) for `nfslan-server.exe`, and
