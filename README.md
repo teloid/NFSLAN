@@ -209,9 +209,43 @@ Careful with the worker: stock `server.dll` derives the ident from its **start-m
 
 **2. UDP 9999 broadcast is blocked.** See [Ports & firewall](#ports--firewall).
 
-**3. Client and server aren't on the same broadcast domain.** Different subnets, guest/AP isolation on the Wi-Fi, a VPN capturing the default route, or Docker bridge networks all break discovery. Wired and wireless on the *same* router are usually fine; "Guest network" almost never is.
+**3. Client and server aren't on the same broadcast domain.** Different subnets, guest/AP isolation on the Wi-Fi, or Docker bridge networks all break discovery. Wired and wireless on the *same* router are usually fine; "Guest network" almost never is.
+
+If you need to play across the internet, see [Playing over a VPN](#playing-over-a-vpn-zerotier-tailscale) — a virtual LAN solves this properly.
 
 **4. Same-PC play needs more than loopback.** `nfslan-server` announces to `127.0.0.1` by default, but stock clients also deliberately hide servers that look like they came from themselves. Defeating that needs the worker's patcher.
+
+---
+
+## Playing over a VPN (ZeroTier, Tailscale)
+
+Discovery is broadcast-based, so it does not cross the internet on its own. A
+**layer-2** virtual network fixes that, because it forwards broadcast the way a
+real switch does. This is tested and works: a server on a machine tethered to a
+phone, and a client on a completely different network, found each other over
+ZeroTier with no port forwarding at all.
+
+**ZeroTier** (layer 2, forwards broadcast — what you want):
+
+1. Create a network at [my.zerotier.com](https://my.zerotier.com) and make sure
+   **Enable Broadcast** is on for it.
+2. Install ZeroTier on both machines, `zerotier-cli join <network-id>`, then
+   authorise each node in the web console.
+3. Run `nfslan-server` as usual. Nothing to configure — it announces on every
+   interface, including the virtual one.
+
+**Tailscale** is layer 3 and does *not* carry broadcast, so the LAN list stays
+empty. It can still work if the client is pointed at the server directly, but
+plain discovery will not.
+
+Two things worth knowing on a machine with both a VPN and a normal connection:
+
+- The status banner shows the **default-route** address, which will usually be
+  your physical connection rather than the VPN. That is cosmetic.
+- The lobby redirect is *not* cosmetic, and is handled per-client: whichever
+  address a client reached the server on is the address it gets told to
+  reconnect to. So a VPN client is sent the VPN address and a LAN client the LAN
+  address, automatically. Use `--addr` only if you need to override that.
 
 ---
 

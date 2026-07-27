@@ -132,6 +132,13 @@ public:
     bool sendAll(const std::string& text) { return sendAll(text.data(), text.size()); }
 
     const Endpoint& peer() const { return peer_; }
+
+    // The local address this peer actually reached us on, from getsockname().
+    // On a multi-homed host — a VPN such as ZeroTier alongside physical
+    // interfaces — this is the only address guaranteed to be routable back from
+    // this particular client, so it is what a redirect must advertise.
+    std::optional<Endpoint> localAddress() const;
+
     const std::string& lastError() const { return lastError_; }
 
 private:

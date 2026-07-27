@@ -478,6 +478,26 @@ void TcpConnection::close() {
     }
 }
 
+std::optional<Endpoint> TcpConnection::localAddress() const {
+    if (!isOpen()) {
+        return std::nullopt;
+    }
+    sockaddr_in local{};
+#ifdef _WIN32
+    int length = sizeof(local);
+#else
+    socklen_t length = sizeof(local);
+#endif
+    if (::getsockname(handle_, reinterpret_cast<sockaddr*>(&local), &length) != 0) {
+        return std::nullopt;
+    }
+    const Endpoint endpoint = fromSockaddr(local);
+    if (endpoint.address == 0) {
+        return std::nullopt;
+    }
+    return endpoint;
+}
+
 bool TcpConnection::setNoDelay(bool enable) {
     if (!isOpen()) {
         lastError_ = "connection is not open";

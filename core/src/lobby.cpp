@@ -225,15 +225,31 @@ bool LobbyService::respondTo(TcpConnection& connection, const TitanMessage& requ
             // Tell the client where the lobby is. It disconnects after this and
             // reconnects to the address we name, so naming an unreachable
             // address (or 0, which it reads as "server down") strands it here.
-            if (settings_.redirectAddress == 0) {
+            //
+            // Prefer the local address this client actually reached us on. On a
+            // multi-homed host the configured/auto-detected address follows the
+            // default route, which is the wrong interface for a client arriving
+            // over a VPN like ZeroTier — it would be handed an address it cannot
+            // route to. getsockname() on the accepted socket is always right for
+            // this particular client.
+            std::uint32_t advertise = settings_.redirectAddress;
+            if (const auto local = connection.localAddress()) {
+                if (local->address != advertise && log_ && settings_.verbose) {
+                    log_("lobby: advertising " + ipv4ToString(local->address) +
+                         " (the address this client reached us on) instead of " +
+                         ipv4ToString(advertise));
+                }
+                advertise = local->address;
+            }
+            if (advertise == 0) {
                 if (log_) {
-                    log_("lobby: no reachable redirect address configured; the client "
-                         "will report the server as down");
+                    log_("lobby: no reachable redirect address; the client will report "
+                         "the server as down");
                 }
                 return false;
             }
             reply.body = tagFieldBuild({
-                {"ADDR", ipv4ToString(settings_.redirectAddress)},
+                {"ADDR", ipv4ToString(advertise)},
                 {"PORT", std::to_string(settings_.redirectPort)},
             });
             break;
